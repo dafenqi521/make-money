@@ -1,7 +1,6 @@
-"""Strategy backtesting UI — parameter forms, equity curves, trade tables.
+"""Strategy backtesting UI — parameter forms, equity charts, comparison view.
 
-Renders the complete strategy page within a Streamlit app.
-Call ``render_strategy_page(df, info)`` from the main app.
+All visual constants from ``src.ui.theme``.
 """
 
 from __future__ import annotations
@@ -18,6 +17,26 @@ from src.strategy.trend_following import TrendFollowingStrategy
 from src.strategy.grid_trading import GridTradingStrategy
 from src.strategy.value_averaging import ValueAveragingStrategy
 from src.strategy.hybrid import HybridStrategy
+from src.engine.metrics import compute_drawdown_series
+from src.ui.theme import (
+    PRIMARY,
+    SUCCESS,
+    DANGER,
+    WARNING,
+    NEUTRAL,
+    DARK,
+    BG_CARD,
+    BORDER,
+    CHART_COLORS,
+    apply_chart_theme,
+    chart_layout,
+    make_equity_colors,
+    section_header,
+    metric_row,
+    info_banner,
+    inject_css,
+)
+
 
 # ---------------------------------------------------------------------------
 # Strategy registry
@@ -38,7 +57,7 @@ STRATEGY_MAP = {s.name: s for s in STRATEGIES}
 # ---------------------------------------------------------------------------
 
 def _render_param_form(strategy, prefix: str = "") -> dict:
-    """Render dynamic parameter controls and return the user's values."""
+    """Render dynamic parameter controls from strategy metadata."""
     descs = strategy.get_param_descriptions()
     defaults = strategy.get_default_params()
     values: dict = {}
@@ -65,7 +84,7 @@ def _render_param_form(strategy, prefix: str = "") -> dict:
                 step=float(desc.get("step", 1)),
                 key=widget_key, help=help_text,
             )
-        else:  # number
+        else:
             values[key] = st.number_input(
                 label,
                 value=float(default) if isinstance(default, (int, float)) else default,
@@ -79,40 +98,37 @@ def _render_param_form(strategy, prefix: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Metrics row
+# Metrics display
 # ---------------------------------------------------------------------------
 
 def _render_metrics(result) -> None:
-    """Render 6-column performance metrics."""
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1:
-        st.metric("年化收益", f"{result.annual_return:+.1%}")
-    with c2:
-        st.metric("Sharpe", f"{result.sharpe_ratio:.2f}")
-    with c3:
-        st.metric("最大回撤", f"{result.max_drawdown:.1%}")
-    with c4:
-        st.metric("Calmar", f"{result.calmar_ratio:.2f}")
-    with c5:
-        st.metric("胜率", f"{result.win_rate:.0%}")
-    with c6:
-        st.metric("总交易", str(result.total_trades))
+    """Render 6-column performance metrics in two tidy rows."""
+    section_header("绩效指标")
+
+    metric_row([
+        {"label": "年化收益", "value": f"{result.annual_return:+.1%}"},
+        {"label": "Sharpe", "value": f"{result.sharpe_ratio:.2f}"},
+        {"label": "最大回撤", "value": f"{result.max_drawdown:.1%}"},
+        {"label": "Calmar", "value": f"{result.calmar_ratio:.2f}"},
+    ])
+    metric_row([
+        {"label": "胜率", "value": f"{result.win_rate:.0%}"},
+        {"label": "总交易", "value": str(result.total_trades)},
+        {"label": "盈利/亏损", "value": f"{result.winning_trades}/{result.losing_trades}"},
+        {"label": "持仓天数", "value": f"{result.avg_holding_days:.0f}"},
+    ])
 
 
 # ---------------------------------------------------------------------------
 # Equity curve chart
 # ---------------------------------------------------------------------------
 
-def _render_equity_chart(
-    result, title: str = "净值曲线", color: str = "#2196F3",
-) -> None:
+def _render_equity_chart(result, title: str = "净值曲线") -> None:
     """Render Plotly equity curve with drawdown subplot."""
     eq = result.equity_curve
     if eq.empty:
         st.warning("暂无权益数据")
         return
-
-    from src.engine.metrics import compute_drawdown_series
 
     equity = eq.set_index("date")["equity"]
     dd = compute_drawdown_series(equity)
@@ -130,15 +146,15 @@ def _render_equity_chart(
         go.Scatter(
             x=equity.index, y=equity.values,
             mode="lines", name=title,
-            line=dict(color=color, width=2),
+            line=dict(color=CHART_COLORS[0], width=2),
         ),
         row=1, col=1,
     )
 
-    # Initial capital reference line
+    # Initial capital reference
     fig.add_hline(
         y=result.initial_capital, line_dash="dash",
-        line_color="gray", opacity=0.5, row=1, col=1,
+        line_color=NEUTRAL, opacity=0.5, row=1, col=1,
     )
 
     # Drawdown
@@ -147,20 +163,15 @@ def _render_equity_chart(
             x=dd.index, y=dd.values,
             mode="lines", name="回撤",
             fill="tozeroy",
-            line=dict(color="#ef5350", width=1),
+            line=dict(color=DANGER, width=1),
         ),
         row=2, col=1,
     )
 
-    fig.update_layout(
-        height=500,
-        showlegend=False,
-        margin=dict(l=0, r=0, t=30, b=0),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-    )
+    apply_chart_theme(fig)
+    fig.update_layout(height=500, showlegend=False)
     fig.update_yaxes(title_text="资产 (元)", row=1, col=1)
-    fig.update_yaxes(title_text="回撤 %", row=2, col=1, tickformat=".0%")
+    fig.update_yaxes(title_text="回撤", row=2, col=1, tickformat=".0%")
 
     st.plotly_chart(fig, use_container_width=True)
 
@@ -170,10 +181,10 @@ def _render_equity_chart(
 # ---------------------------------------------------------------------------
 
 def _render_trade_table(result) -> None:
-    """Render sortable trade history table."""
+    """Render sortable trade history."""
     trades = result.trades
     if not trades:
-        st.info("无已完成交易")
+        info_banner("无已完成交易（策略可能全程持仓未卖出）", kind="info")
         return
 
     rows = []
@@ -189,15 +200,11 @@ def _render_trade_table(result) -> None:
             "持仓天数": t.holding_days if t.holding_days else "—",
         })
 
-    st.dataframe(
-        pd.DataFrame(rows),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 # ---------------------------------------------------------------------------
-# Comparison table
+# Comparison view
 # ---------------------------------------------------------------------------
 
 def _render_comparison(results: list) -> None:
@@ -205,8 +212,9 @@ def _render_comparison(results: list) -> None:
     if not results:
         return
 
+    section_header("策略对比")
+
     # --- Summary table ---
-    st.subheader("📊 策略对比")
     table_rows = []
     for r in results:
         table_rows.append({
@@ -218,17 +226,20 @@ def _render_comparison(results: list) -> None:
             "胜率": f"{r.win_rate:.0%}",
             "交易次数": r.total_trades,
         })
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
 
-    df = pd.DataFrame(table_rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-    # Highlight best Sharpe
+    # Highlight best
     best = max(results, key=lambda r: r.sharpe_ratio)
-    st.success(f"🏆 推荐策略: **{best.strategy_name}** (Sharpe={best.sharpe_ratio:.2f})")
+    info_banner(
+        f"🏆 推荐策略: **{best.strategy_name}** — "
+        f"年化 {best.annual_return:+.1%} | Sharpe {best.sharpe_ratio:.2f} | "
+        f"最大回撤 {best.max_drawdown:.1%}",
+        kind="success",
+    )
 
     # --- Overlaid equity curves ---
-    st.subheader("📈 净值曲线对比")
-    colors = ["#2196F3", "#4CAF50", "#FF9800", "#9C27B0"]
+    section_header("净值曲线对比")
+    colors = make_equity_colors(len(results))
     fig = go.Figure()
 
     for i, r in enumerate(results):
@@ -236,7 +247,7 @@ def _render_comparison(results: list) -> None:
         if eq.empty:
             continue
         equity = eq.set_index("date")["equity"]
-        normalized = equity / equity.iloc[0]  # start from 1.0
+        normalized = equity / equity.iloc[0]
         fig.add_trace(
             go.Scatter(
                 x=normalized.index, y=normalized.values,
@@ -245,15 +256,14 @@ def _render_comparison(results: list) -> None:
             ),
         )
 
-    fig.add_hline(y=1.0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_hline(y=1.0, line_dash="dash", line_color=NEUTRAL, opacity=0.5)
+    apply_chart_theme(fig)
     fig.update_layout(
-        height=400,
-        margin=dict(l=0, r=0, t=10, b=0),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        showlegend=True,
     )
-    fig.update_yaxes(title_text="归一化净值", tickformat=".2f")
+    fig.update_yaxes(title_text="归一化净值 (起始=1)", tickformat=".2f")
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -268,7 +278,7 @@ def render_strategy_page(df: pd.DataFrame, info: dict) -> None:
         df: OHLCV DataFrame from fetch_etf_hist().
         info: Real-time quote dict from fetch_etf_info().
     """
-    st.subheader("📊 策略回测")
+    inject_css()
 
     if df.empty:
         st.warning("暂无历史数据，请先获取行情数据")
@@ -276,29 +286,29 @@ def render_strategy_page(df: pd.DataFrame, info: dict) -> None:
 
     pe_value = info.get("pe_ttm") or info.get("pe_static")
 
-    # --- Strategy selection ---
+    # --- Sidebar: strategy selection ---
     st.sidebar.divider()
     st.sidebar.subheader("⚙️ 策略选择")
     strategy_names = [s.name for s in STRATEGIES]
     selected_name = st.sidebar.radio(
         "选择策略",
         strategy_names,
-        index=2,  # Default to Trend Following
+        index=2,
     )
     strategy = STRATEGY_MAP[selected_name]
-
     compare_mode = st.sidebar.checkbox("☐ 四策略对比", value=False)
 
     # --- Strategy description ---
     with st.expander(f"📖 {strategy.name} — 策略说明", expanded=False):
         st.write(strategy.description)
 
-    # --- PE warning for DCA strategies ---
+    # --- PE info for valuation strategies ---
     if selected_name in ("估值定投", "网格+定投"):
         if pe_value is None:
-            st.warning(
-                "⚠️ 当前 ETF 无 PE(TTM) 数据（腾讯财经不提供），"
-                "估值定投策略将使用基准金额（1倍）执行。"
+            info_banner(
+                "当前 ETF 无 PE(TTM) 数据（腾讯财经不提供），"
+                "估值定投策略将使用基准金额（1倍）执行。",
+                kind="warning",
             )
         else:
             st.info(
@@ -306,7 +316,7 @@ def render_strategy_page(df: pd.DataFrame, info: dict) -> None:
                 f"⚠️ 基于当前PE快照，非历史PE分位，仅供参考。"
             )
 
-    # --- Parameter form ---
+    # --- Parameters ---
     st.sidebar.subheader("🎛️ 参数配置")
     if compare_mode:
         st.sidebar.caption("对比模式使用各策略默认参数")
@@ -314,7 +324,7 @@ def render_strategy_page(df: pd.DataFrame, info: dict) -> None:
     else:
         params = _render_param_form(strategy, prefix="strat")
 
-    # --- Run button ---
+    # --- Run ---
     if st.sidebar.button("▶️ 开始回测", type="primary", use_container_width=True):
         with st.spinner("正在运行回测..."):
             engine = BacktestEngine(
@@ -324,44 +334,31 @@ def render_strategy_page(df: pd.DataFrame, info: dict) -> None:
             )
 
             if compare_mode:
-                # Run all 4 strategies
                 results = []
                 for s in STRATEGIES:
                     sp = s.get_default_params()
-                    kwargs = {}
-                    if "ValueAveraging" in type(s).__name__ or "Hybrid" in type(s).__name__:
-                        kwargs["pe_value"] = pe_value
                     r = engine.run(df.copy(), s, pe_value=pe_value, **sp)
                     results.append(r)
-
                 _render_comparison(results)
 
             else:
-                # Run single strategy
-                kwargs = {}
-                if selected_name in ("估值定投", "网格+定投"):
-                    kwargs["pe_value"] = pe_value
-
                 result = engine.run(df.copy(), strategy, pe_value=pe_value, **params)
 
-                # --- Results ---
+                # Metrics
                 st.divider()
-                st.subheader("📊 绩效指标")
                 _render_metrics(result)
 
+                # Charts & trades
                 st.divider()
                 tab1, tab2 = st.tabs(["📈 净值曲线", "📋 交易明细"])
-
                 with tab1:
                     _render_equity_chart(result, title=strategy.name)
-
                 with tab2:
                     st.caption(f"共 {result.total_trades} 笔交易")
                     _render_trade_table(result)
 
                 # Risk warnings
                 warnings = []
-                # Check if grid strategy and step size is small
                 if selected_name in ("网格交易", "网格+定投"):
                     grid_p = params if params else strategy.get_default_params()
                     step = grid_p.get("position_per_grid_pct", 0.08)
@@ -372,13 +369,11 @@ def render_strategy_page(df: pd.DataFrame, info: dict) -> None:
                         warnings.append(msg)
 
                 if warnings:
-                    st.divider()
                     for w in warnings:
-                        st.warning(w)
+                        info_banner(w, kind="warning")
 
-                # Strategy summary
-                st.divider()
+                # Summary footer
                 st.caption(result.summary())
 
     else:
-        st.info("👈 在左侧配置参数后点击「开始回测」")
+        info_banner("👈 在左侧配置参数后点击「开始回测」", kind="info")

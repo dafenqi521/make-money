@@ -1,0 +1,10 @@
+[theme]
+primaryColor = "#1a56db"
+backgroundColor = "#f8f9fb"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1e293b"
+font = "Inter, system-ui, -apple-system, sans-serif"
+base = "light"
+
+[server]
+maxUploadSize = 5

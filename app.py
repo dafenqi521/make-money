@@ -13,6 +13,7 @@ from src.ui.dashboard import (
     render_no_data,
 )
 from src.ui.strategy_ui import render_strategy_page
+from src.ui.theme import inject_css, NEUTRAL
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -22,10 +23,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Sidebar: common controls ─────────────────────────────────
-st.sidebar.title("📈 ETF 投资决策系统")
-st.sidebar.caption("v0.2 — 数据展示 + 策略回测")
+# Inject custom CSS once per session
+inject_css()
 
+# ── Sidebar: brand header ────────────────────────────────────
+with st.sidebar:
+    st.markdown(
+        '<div style="display:flex; align-items:center; gap:10px; '
+        'padding:8px 0 16px 0;">'
+        '<span style="font-size:1.5rem; font-weight:700; color:#1a56db;">'
+        'ETF 投资决策系统</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(f'<span style="color:{NEUTRAL};">v0.2 · 数据展示 + 策略回测</span>',
+               unsafe_allow_html=True)
+
+# ── Sidebar: controls ────────────────────────────────────────
 symbol = st.sidebar.text_input(
     "ETF 代码",
     value="510300",
@@ -33,7 +47,6 @@ symbol = st.sidebar.text_input(
     help="输入6位数字代码，如 沪深300ETF: 510300",
 ).strip()
 
-# Date range controls
 st.sidebar.subheader("📅 时间范围")
 date_range = st.sidebar.selectbox(
     "选择周期",
@@ -41,7 +54,6 @@ date_range = st.sidebar.selectbox(
     index=3,
 )
 
-# Dynamic date range based on selection
 date_map = {
     "近1个月": "20260601",
     "近3个月": "20260401",
@@ -54,7 +66,7 @@ start_date = date_map[date_range]
 
 st.sidebar.divider()
 
-# ── Page navigation ──────────────────────────────────────────
+# ── Sidebar: navigation ──────────────────────────────────────
 page = st.sidebar.radio(
     "📌 页面导航",
     ["📈 行情数据", "📊 策略回测"],
@@ -62,11 +74,14 @@ page = st.sidebar.radio(
 
 st.sidebar.divider()
 st.sidebar.caption(
-    "数据源: 腾讯财经 + 百度 / 新浪 (AKShare)\n\n"
+    f'<span style="color:{NEUTRAL}; font-size:0.8rem;">'
+    "数据源: 腾讯财经 + 百度 / 新浪 (AKShare)<br><br>"
     "⚠️ 投资有风险，本系统仅供学习参考"
+    "</span>",
+    unsafe_allow_html=True,
 )
 
-# ── Fetch data (shared across pages) ─────────────────────────
+# ── Main content ─────────────────────────────────────────────
 if not symbol:
     st.info("👈 请在左侧输入 ETF 代码开始查询")
 elif len(symbol) != 6 or not symbol.isdigit():
@@ -77,29 +92,21 @@ else:
             info = fetch_etf_info(symbol)
             df = fetch_etf_hist(symbol, start_date=start_date)
 
-            # ── Page: 行情数据 ─────────────────────────────────
             if page == "📈 行情数据":
-                st.title("📈 ETF 行情数据")
-
+                st.title("行情数据")
                 render_etf_overview(info)
-
                 st.divider()
                 render_bid_ask_panel(info)
-
                 st.divider()
-
                 tab1, tab2 = st.tabs(["📊 K线图 (含均线)", "📋 数据明细"])
-
                 with tab1:
                     render_price_chart(df)
-
                 with tab2:
                     st.caption(f"共 {len(df)} 条记录")
                     render_data_table(df)
 
-            # ── Page: 策略回测 ─────────────────────────────────
             else:
-                st.title("📊 策略回测")
+                st.title("策略回测")
                 render_strategy_page(df, info)
 
         except ValueError as e:
