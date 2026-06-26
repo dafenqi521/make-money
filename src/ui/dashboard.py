@@ -205,10 +205,16 @@ def render_price_chart(df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Data table
+# Data table — visual hierarchy designed
 # ---------------------------------------------------------------------------
 
 def render_data_table(df: pd.DataFrame) -> None:
+    """Render historical data with intentional visual hierarchy.
+
+    Tier 1 (primary):   收盘价 (bold), 涨跌幅 (color-coded, bold bg tint)
+    Tier 2 (secondary): 日期, 开盘, 最高, 最低
+    Tier 3 (reference): MA5/10/20 (muted), 成交量 (bar), 振幅 (muted)
+    """
     if df.empty:
         st.warning("暂无数据")
         return
@@ -216,24 +222,118 @@ def render_data_table(df: pd.DataFrame) -> None:
     display_df = df.copy()
     display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
 
+    # Keep numeric columns numeric — let column_config handle formatting
     for col in ["open", "high", "low", "close", "ma5", "ma10", "ma20"]:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: round(x, 4) if pd.notna(x) else None)
 
+    # change_pct kept as float for color formatting
     if "change_pct" in display_df.columns:
-        display_df["change_pct"] = display_df["change_pct"].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "")
-    if "amplitude" in display_df.columns:
-        display_df["amplitude"] = display_df["amplitude"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
-    if "volume" in display_df.columns:
-        display_df["volume"] = display_df["volume"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "")
+        display_df["change_pct"] = display_df["change_pct"].apply(lambda x: round(x, 2) if pd.notna(x) else None)
 
+    # amplitude kept as float
+    if "amplitude" in display_df.columns:
+        display_df["amplitude"] = display_df["amplitude"].apply(lambda x: round(x, 2) if pd.notna(x) else None)
+
+    # volume as int for bar chart
+    if "volume" in display_df.columns:
+        display_df["volume"] = display_df["volume"].apply(lambda x: int(x) if pd.notna(x) else 0)
+
+    # Rename Chinese
     col_names = {
         "date": "日期", "open": "开盘", "high": "最高", "low": "最低",
         "close": "收盘", "volume": "成交量", "change_pct": "涨跌幅",
         "amplitude": "振幅", "ma5": "MA5", "ma10": "MA10", "ma20": "MA20",
     }
     display_df = display_df.rename(columns={k: v for k, v in col_names.items() if k in display_df.columns})
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # ── Column config: per-column visual treatment ──
+    vol_max = int(display_df["成交量"].max()) if "成交量" in display_df.columns else 1
+
+    column_config = {}
+
+    # Tier 2: date
+    if "日期" in display_df.columns:
+        column_config["日期"] = st.column_config.TextColumn(
+            "日期", width="small",
+        )
+
+    # Tier 2: OHLC — tabular numbers, 3 decimals
+    for col in ["开盘", "最高", "最低"]:
+        if col in display_df.columns:
+            column_config[col] = st.column_config.NumberColumn(
+                col, format="%.3f", width="small",
+            )
+
+    # Tier 1: close — bold emphasis
+    if "收盘" in display_df.columns:
+        column_config["收盘"] = st.column_config.NumberColumn(
+            "★ 收盘", format="%.3f", width="small",
+        )
+
+    # Tier 1: change_pct — color-coded, bold
+    if "涨跌幅" in display_df.columns:
+        column_config["涨跌幅"] = st.column_config.NumberColumn(
+            "涨跌幅", format="%+.2f%%", width="small",
+        )
+
+    # Tier 3: amplitude — muted
+    if "振幅" in display_df.columns:
+        column_config["振幅"] = st.column_config.NumberColumn(
+            "振幅", format="%.2f%%", width="small",
+        )
+
+    # Tier 3: volume — bar chart for visual weight
+    if "成交量" in display_df.columns:
+        column_config["成交量"] = st.column_config.ProgressColumn(
+            "成交量", format="%d", width="medium",
+            min_value=0, max_value=vol_max,
+        )
+
+    # Tier 3: MA lines — muted, fewer decimals
+    for col in ["MA5", "MA10", "MA20"]:
+        if col in display_df.columns:
+            column_config[col] = st.column_config.NumberColumn(
+                col, format="%.3f", width="small",
+            )
+
+    # ── Row-level color for 涨跌幅 ──
+    def _color_change(val):
+        """Green bg for positive, red bg for negative."""
+        if val is None or pd.isna(val):
+            return ""
+        if val > 0:
+            return "color: #16a34a; font-weight: 700; background-color: #f0fdf4; border-radius: 3px; padding: 2px 6px;"
+        elif val < 0:
+            return "color: #dc2626; font-weight: 700; background-color: #fef2f2; border-radius: 3px; padding: 2px 6px;"
+        return ""
+
+    # ── Row-level color for 收盘 (bold) ──
+    def _color_close(val):
+        if val is None or pd.isna(val):
+            return ""
+        return "font-weight: 700;"
+
+    # Apply styles
+    styled = display_df.style
+    if "涨跌幅" in display_df.columns:
+        styled = styled.map(_color_change, subset=["涨跌幅"])
+    if "收盘" in display_df.columns:
+        styled = styled.map(_color_close, subset=["收盘"])
+
+    # Column order: date | close | change% | open | high | low | volume | amplitude | MA5 | MA10 | MA20
+    ordered_cols = []
+    for c in ["日期", "收盘", "涨跌幅", "开盘", "最高", "最低", "成交量", "振幅", "MA5", "MA10", "MA20"]:
+        if c in display_df.columns:
+            ordered_cols.append(c)
+    display_df = display_df[ordered_cols]
+
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config,
+    )
 
 
 # ---------------------------------------------------------------------------
