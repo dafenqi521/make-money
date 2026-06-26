@@ -1,0 +1,135 @@
+### Task 4: Streamlit App Entry Point
+
+**Files:**
+- Create: `app.py`
+
+**Interfaces:**
+- Consumes:
+  - `fetch_etf_hist(symbol, start_date, end_date) -> pd.DataFrame` (from Task 2)
+  - `fetch_etf_info(symbol) -> dict` (from Task 2)
+  - `render_etf_overview(info)`, `render_price_chart(df)`, `render_data_table(df)`, `render_no_data(symbol, error)` (from Task 3)
+- Produces: runnable `streamlit run app.py`
+
+- [ ] **Step 1: Write `app.py`**
+
+```python
+"""ETF Investment Decision System — v0.1
+
+A Streamlit app for fetching and displaying historical ETF data.
+"""
+
+import streamlit as st
+from src.data.fetcher import fetch_etf_hist, fetch_etf_info
+from src.ui.dashboard import (
+    render_etf_overview,
+    render_price_chart,
+    render_data_table,
+    render_no_data,
+)
+
+# ── Page config ──────────────────────────────────────────────
+st.set_page_config(
+    page_title="ETF 投资决策系统",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Sidebar ──────────────────────────────────────────────────
+st.sidebar.title("📈 ETF 投资决策系统")
+st.sidebar.caption("v0.1 — 数据展示")
+
+symbol = st.sidebar.text_input(
+    "ETF 代码",
+    value="510300",
+    placeholder="输入 ETF 代码，如 510300",
+    help="输入6位数字代码，如 沪深300ETF: 510300",
+).strip()
+
+# Date range controls
+st.sidebar.subheader("📅 时间范围")
+date_range = st.sidebar.selectbox(
+    "选择周期",
+    options=["近1个月", "近3个月", "近6个月", "近1年", "近3年", "全部"],
+    index=3,
+)
+
+date_map = {
+    "近1个月": "20250101",
+    "近3个月": "20250301",
+    "近6个月": "20241201",
+    "近1年": "20250601",
+    "近3年": "20230601",
+    "全部": None,
+}
+start_date = date_map[date_range]
+
+st.sidebar.divider()
+st.sidebar.caption(
+    "数据来源: AKShare (新浪/东方财富)\n\n"
+    "⚠️ 投资有风险，本系统仅供学习参考"
+)
+
+# ── Main content ─────────────────────────────────────────────
+st.title("📈 ETF 行情数据")
+
+if not symbol:
+    st.info("👈 请在左侧输入 ETF 代码开始查询")
+elif len(symbol) != 6 or not symbol.isdigit():
+    st.warning("ETF 代码应为6位数字，如 `510300`")
+else:
+    with st.spinner(f"正在获取 {symbol} 的数据..."):
+        try:
+            # Fetch info and history in parallel-like fashion
+            info = fetch_etf_info(symbol)
+            df = fetch_etf_hist(symbol, start_date=start_date)
+
+            # Display
+            render_etf_overview(info)
+
+            st.divider()
+
+            tab1, tab2 = st.tabs(["📊 K线图", "📋 数据明细"])
+
+            with tab1:
+                render_price_chart(df)
+
+            with tab2:
+                st.caption(f"共 {len(df)} 条记录")
+                render_data_table(df)
+
+        except ValueError as e:
+            render_no_data(symbol, str(e))
+        except Exception as e:
+            st.error(f"发生未预期的错误: {e}")
+            st.caption("请检查网络连接或稍后重试")
+```
+
+- [ ] **Step 2: Launch the app and verify**
+
+```bash
+streamlit run app.py
+```
+
+Expected:
+- App opens in browser at http://localhost:8501
+- Default ETF code "510300" is pre-filled
+- Shows 沪深300ETF overview metrics
+- K线图 with candlestick + volume renders
+- Data table shows historical records
+- Sidebar date range selector works
+
+Manual verification:
+1. Change ETF code to "510050" → should show 上证50ETF data
+2. Change date range → table and chart should update
+3. Input invalid code like "999999" → should show error with suggestions
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add app.py
+git commit -m "feat: add Streamlit app entry point for v0.1"
+```
+
+---
+

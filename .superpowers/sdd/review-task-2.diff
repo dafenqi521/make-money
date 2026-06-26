@@ -1,0 +1,402 @@
+# Review package: fc354ca..HEAD
+
+## Commits
+af53186 feat: add ETF data fetcher module with AKShare integration
+
+## Files changed
+ src/data/fetcher.py   | 240 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ tests/test_fetcher.py | 139 +++++++++++++++++++++++++++++
+ 2 files changed, 379 insertions(+)
+
+## Diff
+diff --git a/src/data/fetcher.py b/src/data/fetcher.py
+new file mode 100644
+index 0000000..8f85cc9
+--- /dev/null
++++ b/src/data/fetcher.py
+@@ -0,0 +1,240 @@
++"""ETF data fetching via AKShare.
++
++Provides functions to fetch ETF historical daily data, real-time info,
++and the full list of available ETFs from Chinese markets.
++
++Exchange prefix auto-detection:
++- Shanghai (6xx...)  -> "sh" prefix
++- Shenzhen (0xx..., 1xx..., 3xx...) -> "sz" prefix
++- Already-prefixed symbols (shXXXXXX, szXXXXXX) are used as-is.
++"""
++
++import pandas as pd
++import akshare as ak
++
++
++# ---------------------------------------------------------------------------
++# Internal helper
++# ---------------------------------------------------------------------------
++
++def _detect_prefix(symbol: str) -> str:
++    """Detect and prepend the exchange prefix (sh/sz) for a bare ETF code.
++
++    Args:
++        symbol: ETF ticker code, e.g. "510300" or "sh510300".
++
++    Returns:
++        Prefixed symbol string, e.g. "sh510300".
++    """
++    symbol = symbol.strip().lower()
++
++    # Already prefixed – return as-is
++    if symbol.startswith("sh") or symbol.startswith("sz"):
++        return symbol
++
++    # Character-by-character auto-detection
++    first_char = symbol[0]
++    if first_char == "6":
++        return f"sh{symbol}"
++    if first_char in ("0", "1", "3"):
++        return f"sz{symbol}"
++
++    # Unknown exchange — try sh first as default
++    return f"sh{symbol}"
++
++
++# ---------------------------------------------------------------------------
++# Public API
++# ---------------------------------------------------------------------------
++
++def fetch_etf_hist(
++    symbol: str,
++    start_date: str = None,
++    end_date: str = None,
++) -> pd.DataFrame:
++    """Fetch historical daily data for a given ETF.
++
++    Args:
++        symbol: ETF ticker code, e.g. "510300" for 沪深300ETF.
++                Exchange prefix (sh/sz) is auto-detected when omitted.
++        start_date: Optional start date in "YYYYMMDD" format.
++        end_date: Optional end date in "YYYYMMDD" format.
++
++    Returns:
++        DataFrame with columns: date, open, high, low, close, volume.
++        Sorted by date descending (most recent first).
++
++    Raises:
++        ValueError: If symbol is empty or no data could be fetched.
++    """
++    # --- Validation ---
++    if not symbol or not isinstance(symbol, str) or not symbol.strip():
++        raise ValueError("symbol must be a non-empty string")
++
++    symbol = symbol.strip()
++    prefixed = _detect_prefix(symbol)
++
++    # --- Fetch ---
++    try:
++        df = ak.fund_etf_hist_sina(symbol=prefixed)
++    except Exception as exc:
++        raise ValueError(
++            f"Failed to fetch data for symbol '{prefixed}': {exc}"
++        ) from exc
++
++    if df is None or df.empty:
++        raise ValueError(
++            f"No data returned for symbol '{symbol}' (prefixed: '{prefixed}'). "
++            f"Check that the ETF code is valid."
++        )
++
++    # --- Normalise column names ---
++    # fund_etf_hist_sina returns English columns: date, open, high, low,
++    # close, volume.  Guard against the unexpected with a mapping.
++    column_map = {
++        "date": "date",
++        "open": "open",
++        "high": "high",
++        "low": "low",
++        "close": "close",
++        "volume": "volume",
++    }
++
++    # Chinese-column fallback (older AKShare versions or different funcs)
++    chinese_map = {}
++    for col in df.columns:
++        col_str = str(col).strip()
++        col_lower = col_str.lower()
++        if col_lower == "date" or "日期" in col_str or col_lower == "date":
++            chinese_map[col] = "date"
++        elif col_lower == "open" or "开盘" in col_str:
++            chinese_map[col] = "open"
++        elif col_lower == "high" or "最高" in col_str:
++            chinese_map[col] = "high"
++        elif col_lower == "low" or "最低" in col_str:
++            chinese_map[col] = "low"
++        elif col_lower == "close" or "收盘" in col_str:
++            chinese_map[col] = "close"
++        elif col_lower == "volume" or "成交" in col_str:
++            chinese_map[col] = "volume"
++
++    if chinese_map:
++        df = df.rename(columns=chinese_map)
++
++    # --- Validate required columns ---
++    required = ["date", "open", "high", "low", "close", "volume"]
++    missing = [c for c in required if c not in df.columns]
++    if missing:
++        raise ValueError(
++            f"Data missing required columns: {missing}. "
++            f"Available columns: {list(df.columns)}"
++        )
++
++    # Keep only the columns we care about
++    df = df[required].copy()
++
++    # Convert date column
++    df["date"] = pd.to_datetime(df["date"], errors="coerce")
++
++    # --- Date filtering (AKShare does not support start/end natively) ---
++    if start_date:
++        start = pd.to_datetime(start_date)
++        df = df[df["date"] >= start]
++    if end_date:
++        end = pd.to_datetime(end_date)
++        df = df[df["date"] <= end]
++
++    if df.empty:
++        raise ValueError(
++            f"No data for symbol '{symbol}' in the requested date range "
++            f"({start_date} – {end_date})."
++        )
++
++    # Sort most-recent-first
++    df = df.sort_values("date", ascending=False).reset_index(drop=True)
++
++    return df
++
++
++def fetch_etf_info(symbol: str) -> dict:
++    """Fetch basic info and latest quote for an ETF.
++
++    Args:
++        symbol: ETF ticker code, e.g. "510300".
++                Exchange prefix is auto-detected when omitted.
++
++    Returns:
++        dict with keys: name, current_price, change_pct, volume.
++        Values may be None if the symbol is not found.
++    """
++    if not symbol or not isinstance(symbol, str) or not symbol.strip():
++        raise ValueError("symbol must be a non-empty string")
++
++    symbol = symbol.strip()
++    prefixed = _detect_prefix(symbol)
++
++    try:
++        df_spot = ak.fund_etf_spot_em()
++    except Exception:
++        # Network or upstream error — return graceful empty result
++        return {
++            "name": f"ETF {symbol}",
++            "current_price": None,
++            "change_pct": None,
++            "volume": None,
++        }
++
++    # Match by exact code (codes in spot data already include prefix)
++    row = df_spot[df_spot["代码"] == prefixed]
++    if row.empty:
++        # Try bare code match as fallback
++        row = df_spot[df_spot["代码"] == symbol]
++
++    if row.empty:
++        return {
++            "name": f"ETF {symbol}",
++            "current_price": None,
++            "change_pct": None,
++            "volume": None,
++        }
++
++    row = row.iloc[0]
++    return {
++        "name": row.get("名称", f"ETF {symbol}"),
++        "current_price": (
++            float(row["最新价"])
++            if "最新价" in row.index and pd.notna(row["最新价"])
++            else None
++        ),
++        "change_pct": (
++            float(row["涨跌幅"])
++            if "涨跌幅" in row.index and pd.notna(row["涨跌幅"])
++            else None
++        ),
++        "volume": (
++            float(row["成交量"])
++            if "成交量" in row.index and pd.notna(row["成交量"])
++            else None
++        ),
++    }
++
++
++def get_available_etfs() -> pd.DataFrame:
++    """Get list of all available ETFs from the market.
++
++    Returns:
++        DataFrame with ETF codes and names.
++    """
++    try:
++        df = ak.fund_etf_category_sina()
++    except Exception:
++        # Fallback: use spot data
++        try:
++            df = ak.fund_etf_spot_em()
++        except Exception:
++            # Last resort: empty DataFrame with expected columns
++            return pd.DataFrame(columns=["代码", "名称"])
++
++    # Return the full DataFrame – callers can pick columns they need.
++    # The minimum expected columns are 代码 (code) and 名称 (name).
++    return df
+diff --git a/tests/test_fetcher.py b/tests/test_fetcher.py
+new file mode 100644
+index 0000000..b31a031
+--- /dev/null
++++ b/tests/test_fetcher.py
+@@ -0,0 +1,139 @@
++"""Tests for ETF data fetcher module."""
++
++import pytest
++import pandas as pd
++from src.data.fetcher import (
++    fetch_etf_hist,
++    fetch_etf_info,
++    get_available_etfs,
++    _detect_prefix,
++)
++
++
++# ---------------------------------------------------------------------------
++# Prefix auto-detection
++# ---------------------------------------------------------------------------
++
++def test_detect_prefix_shanghai():
++    """6xx codes map to Shanghai prefix sh."""
++    assert _detect_prefix("510300") == "sh510300"
++    assert _detect_prefix("510050") == "sh510050"
++    assert _detect_prefix("510500") == "sh510500"
++    assert _detect_prefix("588000") == "sh588000"
++    assert _detect_prefix("600000") == "sh600000"
++
++
++def test_detect_prefix_shenzhen():
++    """0xx/1xx/3xx codes map to Shenzhen prefix sz."""
++    assert _detect_prefix("159915") == "sz159915"
++    assert _detect_prefix("159919") == "sz159919"
++    assert _detect_prefix("001234") == "sz001234"
++    assert _detect_prefix("300750") == "sz300750"
++
++
++def test_detect_prefix_already_prefixed():
++    """Codes that already have a prefix are returned as-is."""
++    assert _detect_prefix("sh510300") == "sh510300"
++    assert _detect_prefix("sz159915") == "sz159915"
++
++
++# ---------------------------------------------------------------------------
++# fetch_etf_hist
++# ---------------------------------------------------------------------------
++
++def test_fetch_etf_hist_returns_dataframe():
++    """fetch_etf_hist should return a DataFrame with expected columns."""
++    df = fetch_etf_hist(symbol="510300")
++    assert isinstance(df, pd.DataFrame)
++    assert len(df) > 0
++    expected_cols = {"date", "open", "high", "low", "close", "volume"}
++    assert expected_cols.issubset(set(df.columns))
++
++
++def test_fetch_etf_hist_date_filter():
++    """fetch_etf_hist should filter by start_date and end_date."""
++    df = fetch_etf_hist(
++        symbol="510300",
++        start_date="20260601",
++        end_date="20260626",
++    )
++    assert isinstance(df, pd.DataFrame)
++    assert len(df) > 0
++    # All dates should be within the requested range
++    assert (df["date"] >= pd.Timestamp("2026-06-01")).all()
++    assert (df["date"] <= pd.Timestamp("2026-06-26")).all()
++
++
++def test_fetch_etf_hist_empty_symbol():
++    """fetch_etf_hist with empty symbol should raise ValueError."""
++    with pytest.raises(ValueError, match="symbol"):
++        fetch_etf_hist(symbol="")
++
++
++def test_fetch_etf_hist_invalid_symbol_raises():
++    """fetch_etf_hist with a non-existent symbol should raise ValueError."""
++    with pytest.raises(ValueError):
++        fetch_etf_hist(symbol="999999")
++
++
++def test_fetch_etf_hist_with_prefixed_symbol():
++    """fetch_etf_hist should work with already-prefixed symbols."""
++    df = fetch_etf_hist(symbol="sh510300")
++    assert isinstance(df, pd.DataFrame)
++    assert len(df) > 0
++
++
++def test_fetch_etf_hist_shenzhen_etf():
++    """fetch_etf_hist should work with Shenzhen ETFs."""
++    df = fetch_etf_hist(symbol="159915")
++    assert isinstance(df, pd.DataFrame)
++    assert len(df) > 0
++    expected_cols = {"date", "open", "high", "low", "close", "volume"}
++    assert expected_cols.issubset(set(df.columns))
++
++
++# ---------------------------------------------------------------------------
++# fetch_etf_info
++# ---------------------------------------------------------------------------
++
++def test_fetch_etf_info_returns_dict():
++    """fetch_etf_info should return a dict with expected keys."""
++    info = fetch_etf_info(symbol="510300")
++    assert isinstance(info, dict)
++    assert "name" in info
++    assert "current_price" in info
++    assert "change_pct" in info
++    assert "volume" in info
++
++
++def test_fetch_etf_info_empty_symbol():
++    """fetch_etf_info with empty symbol should raise ValueError."""
++    with pytest.raises(ValueError, match="symbol"):
++        fetch_etf_info(symbol="")
++
++
++def test_fetch_etf_info_unknown_symbol_returns_graceful():
++    """fetch_etf_info with unknown symbol should return dict with None values."""
++    info = fetch_etf_info(symbol="999999")
++    assert isinstance(info, dict)
++    assert "name" in info
++    # Should still have name (fallback) but None for price data
++    assert info["current_price"] is None
++
++
++# ---------------------------------------------------------------------------
++# get_available_etfs
++# ---------------------------------------------------------------------------
++
++def test_get_available_etfs_returns_dataframe():
++    """get_available_etfs should return a non-empty DataFrame."""
++    df = get_available_etfs()
++    assert isinstance(df, pd.DataFrame)
++    assert len(df) > 0
++
++
++def test_get_available_etfs_has_expected_columns():
++    """get_available_etfs should have code and name columns."""
++    df = get_available_etfs()
++    # At minimum we need a way to identify ETFs
++    assert len(df.columns) >= 1

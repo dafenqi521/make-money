@@ -1,0 +1,220 @@
+# Review package: af53186..HEAD
+
+## Commits
+f928c42 fix: address review findings for fetcher module
+
+## Files changed
+ src/data/fetcher.py   | 35 +++++++----------------------
+ tests/test_fetcher.py | 62 ++++++++++++++++++++++++++++++++++++++++-----------
+ 2 files changed, 57 insertions(+), 40 deletions(-)
+
+## Diff
+diff --git a/src/data/fetcher.py b/src/data/fetcher.py
+index 8f85cc9..9511b7d 100644
+--- a/src/data/fetcher.py
++++ b/src/data/fetcher.py
+@@ -83,36 +83,27 @@ def fetch_etf_hist(
+         ) from exc
+ 
+     if df is None or df.empty:
+         raise ValueError(
+             f"No data returned for symbol '{symbol}' (prefixed: '{prefixed}'). "
+             f"Check that the ETF code is valid."
+         )
+ 
+     # --- Normalise column names ---
+     # fund_etf_hist_sina returns English columns: date, open, high, low,
+-    # close, volume.  Guard against the unexpected with a mapping.
+-    column_map = {
+-        "date": "date",
+-        "open": "open",
+-        "high": "high",
+-        "low": "low",
+-        "close": "close",
+-        "volume": "volume",
+-    }
+-
+-    # Chinese-column fallback (older AKShare versions or different funcs)
++    # close, volume.  The renaming loop below handles both English and
++    # Chinese column names (older AKShare versions or different funcs).
+     chinese_map = {}
+     for col in df.columns:
+         col_str = str(col).strip()
+         col_lower = col_str.lower()
+-        if col_lower == "date" or "日期" in col_str or col_lower == "date":
++        if col_lower == "date" or "日期" in col_str:
+             chinese_map[col] = "date"
+         elif col_lower == "open" or "开盘" in col_str:
+             chinese_map[col] = "open"
+         elif col_lower == "high" or "最高" in col_str:
+             chinese_map[col] = "high"
+         elif col_lower == "low" or "最低" in col_str:
+             chinese_map[col] = "low"
+         elif col_lower == "close" or "收盘" in col_str:
+             chinese_map[col] = "close"
+         elif col_lower == "volume" or "成交" in col_str:
+@@ -137,27 +128,21 @@ def fetch_etf_hist(
+     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+ 
+     # --- Date filtering (AKShare does not support start/end natively) ---
+     if start_date:
+         start = pd.to_datetime(start_date)
+         df = df[df["date"] >= start]
+     if end_date:
+         end = pd.to_datetime(end_date)
+         df = df[df["date"] <= end]
+ 
+-    if df.empty:
+-        raise ValueError(
+-            f"No data for symbol '{symbol}' in the requested date range "
+-            f"({start_date} – {end_date})."
+-        )
+-
+-    # Sort most-recent-first
++    # Sort most-recent-first (even if empty — caller handles that)
+     df = df.sort_values("date", ascending=False).reset_index(drop=True)
+ 
+     return df
+ 
+ 
+ def fetch_etf_info(symbol: str) -> dict:
+     """Fetch basic info and latest quote for an ETF.
+ 
+     Args:
+         symbol: ETF ticker code, e.g. "510300".
+@@ -168,28 +153,24 @@ def fetch_etf_info(symbol: str) -> dict:
+         Values may be None if the symbol is not found.
+     """
+     if not symbol or not isinstance(symbol, str) or not symbol.strip():
+         raise ValueError("symbol must be a non-empty string")
+ 
+     symbol = symbol.strip()
+     prefixed = _detect_prefix(symbol)
+ 
+     try:
+         df_spot = ak.fund_etf_spot_em()
+-    except Exception:
+-        # Network or upstream error — return graceful empty result
+-        return {
+-            "name": f"ETF {symbol}",
+-            "current_price": None,
+-            "change_pct": None,
+-            "volume": None,
+-        }
++    except Exception as exc:
++        raise ValueError(
++            f"Failed to fetch ETF info for '{symbol}': {exc}"
++        ) from exc
+ 
+     # Match by exact code (codes in spot data already include prefix)
+     row = df_spot[df_spot["代码"] == prefixed]
+     if row.empty:
+         # Try bare code match as fallback
+         row = df_spot[df_spot["代码"] == symbol]
+ 
+     if row.empty:
+         return {
+             "name": f"ETF {symbol}",
+diff --git a/tests/test_fetcher.py b/tests/test_fetcher.py
+index b31a031..757c0d7 100644
+--- a/tests/test_fetcher.py
++++ b/tests/test_fetcher.py
+@@ -91,49 +91,85 @@ def test_fetch_etf_hist_shenzhen_etf():
+     expected_cols = {"date", "open", "high", "low", "close", "volume"}
+     assert expected_cols.issubset(set(df.columns))
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # fetch_etf_info
+ # ---------------------------------------------------------------------------
+ 
+ def test_fetch_etf_info_returns_dict():
+     """fetch_etf_info should return a dict with expected keys."""
+-    info = fetch_etf_info(symbol="510300")
+-    assert isinstance(info, dict)
+-    assert "name" in info
+-    assert "current_price" in info
+-    assert "change_pct" in info
+-    assert "volume" in info
++    import akshare as ak
++    from unittest.mock import patch
++
++    # Build a mock spot DataFrame that includes sh510300
++    mock_df = pd.DataFrame({
++        "代码": ["sh510300", "sz159915"],
++        "名称": ["沪深300ETF", "创业板ETF"],
++        "最新价": [3.850, 2.120],
++        "涨跌幅": [0.52, -0.31],
++        "成交量": [12345678, 9876543],
++    })
++
++    with patch.object(ak, "fund_etf_spot_em", return_value=mock_df):
++        info = fetch_etf_info(symbol="510300")
++        assert isinstance(info, dict)
++        assert info["name"] == "沪深300ETF"
++        assert info["current_price"] == 3.850
++        assert info["change_pct"] == 0.52
++        assert info["volume"] == 12345678
+ 
+ 
+ def test_fetch_etf_info_empty_symbol():
+     """fetch_etf_info with empty symbol should raise ValueError."""
+     with pytest.raises(ValueError, match="symbol"):
+         fetch_etf_info(symbol="")
+ 
+ 
+ def test_fetch_etf_info_unknown_symbol_returns_graceful():
+     """fetch_etf_info with unknown symbol should return dict with None values."""
+-    info = fetch_etf_info(symbol="999999")
+-    assert isinstance(info, dict)
+-    assert "name" in info
+-    # Should still have name (fallback) but None for price data
+-    assert info["current_price"] is None
++    import akshare as ak
++    from unittest.mock import patch
++
++    # Mock spot DataFrame that does NOT contain 999999
++    mock_df = pd.DataFrame({
++        "代码": ["sh510300"],
++        "名称": ["沪深300ETF"],
++        "最新价": [3.850],
++        "涨跌幅": [0.52],
++        "成交量": [12345678],
++    })
++
++    with patch.object(ak, "fund_etf_spot_em", return_value=mock_df):
++        info = fetch_etf_info(symbol="999999")
++        assert isinstance(info, dict)
++        assert "name" in info
++        # Should still have name (fallback) but None for price data
++        assert info["current_price"] is None
++
++
++def test_fetch_etf_info_network_error_raises():
++    """fetch_etf_info should raise ValueError when upstream fetch fails."""
++    import akshare as ak
++    from unittest.mock import patch
++
++    with patch.object(ak, "fund_etf_spot_em", side_effect=ConnectionError("timeout")):
++        with pytest.raises(ValueError, match="Failed to fetch ETF info"):
++            fetch_etf_info(symbol="510300")
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # get_available_etfs
+ # ---------------------------------------------------------------------------
+ 
+ def test_get_available_etfs_returns_dataframe():
+     """get_available_etfs should return a non-empty DataFrame."""
+     df = get_available_etfs()
+     assert isinstance(df, pd.DataFrame)
+     assert len(df) > 0
+ 
+ 
+ def test_get_available_etfs_has_expected_columns():
+     """get_available_etfs should have code and name columns."""
+     df = get_available_etfs()
+-    # At minimum we need a way to identify ETFs
+-    assert len(df.columns) >= 1
++    assert "代码" in df.columns
++    assert "名称" in df.columns
