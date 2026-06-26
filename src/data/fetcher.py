@@ -90,22 +90,13 @@ def fetch_etf_hist(
 
     # --- Normalise column names ---
     # fund_etf_hist_sina returns English columns: date, open, high, low,
-    # close, volume.  Guard against the unexpected with a mapping.
-    column_map = {
-        "date": "date",
-        "open": "open",
-        "high": "high",
-        "low": "low",
-        "close": "close",
-        "volume": "volume",
-    }
-
-    # Chinese-column fallback (older AKShare versions or different funcs)
+    # close, volume.  The renaming loop below handles both English and
+    # Chinese column names (older AKShare versions or different funcs).
     chinese_map = {}
     for col in df.columns:
         col_str = str(col).strip()
         col_lower = col_str.lower()
-        if col_lower == "date" or "日期" in col_str or col_lower == "date":
+        if col_lower == "date" or "日期" in col_str:
             chinese_map[col] = "date"
         elif col_lower == "open" or "开盘" in col_str:
             chinese_map[col] = "open"
@@ -144,13 +135,7 @@ def fetch_etf_hist(
         end = pd.to_datetime(end_date)
         df = df[df["date"] <= end]
 
-    if df.empty:
-        raise ValueError(
-            f"No data for symbol '{symbol}' in the requested date range "
-            f"({start_date} – {end_date})."
-        )
-
-    # Sort most-recent-first
+    # Sort most-recent-first (even if empty — caller handles that)
     df = df.sort_values("date", ascending=False).reset_index(drop=True)
 
     return df
@@ -175,14 +160,10 @@ def fetch_etf_info(symbol: str) -> dict:
 
     try:
         df_spot = ak.fund_etf_spot_em()
-    except Exception:
-        # Network or upstream error — return graceful empty result
-        return {
-            "name": f"ETF {symbol}",
-            "current_price": None,
-            "change_pct": None,
-            "volume": None,
-        }
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to fetch ETF info for '{symbol}': {exc}"
+        ) from exc
 
     # Match by exact code (codes in spot data already include prefix)
     row = df_spot[df_spot["代码"] == prefixed]

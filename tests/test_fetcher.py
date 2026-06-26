@@ -98,12 +98,25 @@ def test_fetch_etf_hist_shenzhen_etf():
 
 def test_fetch_etf_info_returns_dict():
     """fetch_etf_info should return a dict with expected keys."""
-    info = fetch_etf_info(symbol="510300")
-    assert isinstance(info, dict)
-    assert "name" in info
-    assert "current_price" in info
-    assert "change_pct" in info
-    assert "volume" in info
+    import akshare as ak
+    from unittest.mock import patch
+
+    # Build a mock spot DataFrame that includes sh510300
+    mock_df = pd.DataFrame({
+        "代码": ["sh510300", "sz159915"],
+        "名称": ["沪深300ETF", "创业板ETF"],
+        "最新价": [3.850, 2.120],
+        "涨跌幅": [0.52, -0.31],
+        "成交量": [12345678, 9876543],
+    })
+
+    with patch.object(ak, "fund_etf_spot_em", return_value=mock_df):
+        info = fetch_etf_info(symbol="510300")
+        assert isinstance(info, dict)
+        assert info["name"] == "沪深300ETF"
+        assert info["current_price"] == 3.850
+        assert info["change_pct"] == 0.52
+        assert info["volume"] == 12345678
 
 
 def test_fetch_etf_info_empty_symbol():
@@ -114,11 +127,34 @@ def test_fetch_etf_info_empty_symbol():
 
 def test_fetch_etf_info_unknown_symbol_returns_graceful():
     """fetch_etf_info with unknown symbol should return dict with None values."""
-    info = fetch_etf_info(symbol="999999")
-    assert isinstance(info, dict)
-    assert "name" in info
-    # Should still have name (fallback) but None for price data
-    assert info["current_price"] is None
+    import akshare as ak
+    from unittest.mock import patch
+
+    # Mock spot DataFrame that does NOT contain 999999
+    mock_df = pd.DataFrame({
+        "代码": ["sh510300"],
+        "名称": ["沪深300ETF"],
+        "最新价": [3.850],
+        "涨跌幅": [0.52],
+        "成交量": [12345678],
+    })
+
+    with patch.object(ak, "fund_etf_spot_em", return_value=mock_df):
+        info = fetch_etf_info(symbol="999999")
+        assert isinstance(info, dict)
+        assert "name" in info
+        # Should still have name (fallback) but None for price data
+        assert info["current_price"] is None
+
+
+def test_fetch_etf_info_network_error_raises():
+    """fetch_etf_info should raise ValueError when upstream fetch fails."""
+    import akshare as ak
+    from unittest.mock import patch
+
+    with patch.object(ak, "fund_etf_spot_em", side_effect=ConnectionError("timeout")):
+        with pytest.raises(ValueError, match="Failed to fetch ETF info"):
+            fetch_etf_info(symbol="510300")
 
 
 # ---------------------------------------------------------------------------
@@ -135,5 +171,5 @@ def test_get_available_etfs_returns_dataframe():
 def test_get_available_etfs_has_expected_columns():
     """get_available_etfs should have code and name columns."""
     df = get_available_etfs()
-    # At minimum we need a way to identify ETFs
-    assert len(df.columns) >= 1
+    assert "代码" in df.columns
+    assert "名称" in df.columns
