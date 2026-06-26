@@ -1,6 +1,6 @@
-"""ETF Investment Decision System — v0.1
+"""ETF Investment Decision System — v0.2
 
-A Streamlit app for fetching and displaying historical ETF data.
+A Streamlit app for ETF data display and strategy backtesting.
 """
 
 import streamlit as st
@@ -12,6 +12,7 @@ from src.ui.dashboard import (
     render_data_table,
     render_no_data,
 )
+from src.ui.strategy_ui import render_strategy_page
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -21,9 +22,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Sidebar ──────────────────────────────────────────────────
+# ── Sidebar: common controls ─────────────────────────────────
 st.sidebar.title("📈 ETF 投资决策系统")
-st.sidebar.caption("v0.1 — 数据展示")
+st.sidebar.caption("v0.2 — 数据展示 + 策略回测")
 
 symbol = st.sidebar.text_input(
     "ETF 代码",
@@ -40,10 +41,11 @@ date_range = st.sidebar.selectbox(
     index=3,
 )
 
+# Dynamic date range based on selection
 date_map = {
-    "近1个月": "20250101",
-    "近3个月": "20250301",
-    "近6个月": "20241201",
+    "近1个月": "20260601",
+    "近3个月": "20260401",
+    "近6个月": "20260101",
     "近1年": "20250601",
     "近3年": "20230601",
     "全部": None,
@@ -51,14 +53,20 @@ date_map = {
 start_date = date_map[date_range]
 
 st.sidebar.divider()
+
+# ── Page navigation ──────────────────────────────────────────
+page = st.sidebar.radio(
+    "📌 页面导航",
+    ["📈 行情数据", "📊 策略回测"],
+)
+
+st.sidebar.divider()
 st.sidebar.caption(
     "数据源: 腾讯财经 + 百度 / 新浪 (AKShare)\n\n"
     "⚠️ 投资有风险，本系统仅供学习参考"
 )
 
-# ── Main content ─────────────────────────────────────────────
-st.title("📈 ETF 行情数据")
-
+# ── Fetch data (shared across pages) ─────────────────────────
 if not symbol:
     st.info("👈 请在左侧输入 ETF 代码开始查询")
 elif len(symbol) != 6 or not symbol.isdigit():
@@ -66,26 +74,33 @@ elif len(symbol) != 6 or not symbol.isdigit():
 else:
     with st.spinner(f"正在获取 {symbol} 的数据..."):
         try:
-            # Fetch info and history in parallel-like fashion
             info = fetch_etf_info(symbol)
             df = fetch_etf_hist(symbol, start_date=start_date)
 
-            # Display
-            render_etf_overview(info)
+            # ── Page: 行情数据 ─────────────────────────────────
+            if page == "📈 行情数据":
+                st.title("📈 ETF 行情数据")
 
-            st.divider()
-            render_bid_ask_panel(info)
+                render_etf_overview(info)
 
-            st.divider()
+                st.divider()
+                render_bid_ask_panel(info)
 
-            tab1, tab2 = st.tabs(["📊 K线图 (含均线)", "📋 数据明细"])
+                st.divider()
 
-            with tab1:
-                render_price_chart(df)
+                tab1, tab2 = st.tabs(["📊 K线图 (含均线)", "📋 数据明细"])
 
-            with tab2:
-                st.caption(f"共 {len(df)} 条记录")
-                render_data_table(df)
+                with tab1:
+                    render_price_chart(df)
+
+                with tab2:
+                    st.caption(f"共 {len(df)} 条记录")
+                    render_data_table(df)
+
+            # ── Page: 策略回测 ─────────────────────────────────
+            else:
+                st.title("📊 策略回测")
+                render_strategy_page(df, info)
 
         except ValueError as e:
             render_no_data(symbol, str(e))
