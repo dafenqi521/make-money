@@ -78,4 +78,24 @@ print(result.summary())  # 年化/Sharpe/MaxDD/胜率
 - Python 3.8（建议升3.9+但当前可用）
 - ETF的PE/TTM腾讯经常不返回（数据源特性，非Bug）
 - `Styler.applymap()` 不是 `.map()`（pandas 2.0兼容）
-- 已安装的 Skill：`a-stock-data`, `globalpercent`, `frontend-design`
+## 可用的 Skills
+
+项目中有 3 个 Skill 文件，Codex/Claude Code 会自动识别：
+
+### 1. a-stock-data — A股全栈数据工具包
+- 文件：`.claude/skills/a-stock-data/SKILL.md`
+- 作者：simonlin1212，v3.2.4
+- 功能：7层数据架构（行情/研报/信号/资金面/新闻/基础数据/公告）
+- **本项目关联**：腾讯财经 API `qt.gtimg.cn`、百度K线、mootdx、东财研报
+- 优先用通达信(mootdx)/腾讯(不封IP)，东财接口已内置限流防封
+
+### 2. globalpercent — 全球宏观概率面板
+- 文件：`.claude/skills/globalpercent/SKILL.md`
+- 作者：simonlin1212
+- 功能：Polymarket + Kalshi 预测市场概率数据，零鉴权
+- **本项目关联**：v0.3 风控叠加层——宏观情绪温度计，极端市场抑制买入信号
+
+### 3. frontend-design — 前端设计 Skill
+- 文件：`.claude/skills/frontend-design/SKILL.md`
+- 功能：8种设计锚点（Swiss/Industrial/Brutalist/Aurora/Chaotic/Retro-Futuristic/Organic/Lo-Fi）
+- **本项目关联**：UI 美化时使用，当前选用浅色卡片式设计
