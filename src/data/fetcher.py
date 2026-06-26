@@ -9,8 +9,18 @@ Exchange prefix auto-detection:
 - Already-prefixed symbols (shXXXXXX, szXXXXXX) are used as-is.
 """
 
+import os
+import warnings
 import pandas as pd
 import akshare as ak
+
+# Disable system proxy — Windows proxy settings often interfere with
+# AKShare's HTTP requests to Sina/Eastmoney. Must run before any HTTP call.
+os.environ["no_proxy"] = "*"
+os.environ["NO_PROXY"] = "*"
+
+# Suppress the Python 3.8 upgrade nag from akshare
+warnings.filterwarnings("ignore", message=".*Python.*3\\.9.*")
 
 
 # ---------------------------------------------------------------------------
