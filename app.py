@@ -7,6 +7,7 @@ import streamlit as st
 from src.data.fetcher import fetch_etf_hist, fetch_etf_info
 from src.ui.dashboard import (
     render_etf_overview,
+    render_bid_ask_panel,
     render_price_chart,
     render_data_table,
     render_no_data,
@@ -73,8 +74,11 @@ else:
             render_etf_overview(info)
 
             st.divider()
+            render_bid_ask_panel(info)
 
-            tab1, tab2 = st.tabs(["📊 K线图", "📋 数据明细"])
+            st.divider()
+
+            tab1, tab2 = st.tabs(["📊 K线图 (含均线)", "📋 数据明细"])
 
             with tab1:
                 render_price_chart(df)

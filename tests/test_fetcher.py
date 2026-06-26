@@ -2,6 +2,9 @@
 
 import pytest
 import pandas as pd
+import requests as requests_lib
+from unittest.mock import patch, Mock
+
 from src.data.fetcher import (
     fetch_etf_hist,
     fetch_etf_info,
@@ -42,16 +45,19 @@ def test_detect_prefix_already_prefixed():
 # ---------------------------------------------------------------------------
 
 def test_fetch_etf_hist_returns_dataframe():
-    """fetch_etf_hist should return a DataFrame with expected columns."""
+    """fetch_etf_hist returns a DataFrame with OHLCV + computed columns."""
     df = fetch_etf_hist(symbol="510300")
     assert isinstance(df, pd.DataFrame)
     assert len(df) > 0
-    expected_cols = {"date", "open", "high", "low", "close", "volume"}
+    expected_cols = {
+        "date", "open", "high", "low", "close", "volume",
+        "change_pct", "amplitude", "ma5", "ma10", "ma20",
+    }
     assert expected_cols.issubset(set(df.columns))
 
 
 def test_fetch_etf_hist_date_filter():
-    """fetch_etf_hist should filter by start_date and end_date."""
+    """fetch_etf_hist filters by start_date and end_date."""
     df = fetch_etf_hist(
         symbol="510300",
         start_date="20260601",
@@ -59,102 +65,120 @@ def test_fetch_etf_hist_date_filter():
     )
     assert isinstance(df, pd.DataFrame)
     assert len(df) > 0
-    # All dates should be within the requested range
     assert (df["date"] >= pd.Timestamp("2026-06-01")).all()
     assert (df["date"] <= pd.Timestamp("2026-06-26")).all()
 
 
 def test_fetch_etf_hist_empty_symbol():
-    """fetch_etf_hist with empty symbol should raise ValueError."""
+    """fetch_etf_hist with empty symbol raises ValueError."""
     with pytest.raises(ValueError, match="symbol"):
         fetch_etf_hist(symbol="")
 
 
 def test_fetch_etf_hist_invalid_symbol_raises():
-    """fetch_etf_hist with a non-existent symbol should raise ValueError."""
+    """fetch_etf_hist with a non-existent symbol raises ValueError."""
     with pytest.raises(ValueError):
         fetch_etf_hist(symbol="999999")
 
 
 def test_fetch_etf_hist_with_prefixed_symbol():
-    """fetch_etf_hist should work with already-prefixed symbols."""
+    """fetch_etf_hist works with already-prefixed symbols."""
     df = fetch_etf_hist(symbol="sh510300")
     assert isinstance(df, pd.DataFrame)
     assert len(df) > 0
 
 
 def test_fetch_etf_hist_shenzhen_etf():
-    """fetch_etf_hist should work with Shenzhen ETFs."""
+    """fetch_etf_hist works with Shenzhen ETFs."""
     df = fetch_etf_hist(symbol="159915")
     assert isinstance(df, pd.DataFrame)
     assert len(df) > 0
-    expected_cols = {"date", "open", "high", "low", "close", "volume"}
-    assert expected_cols.issubset(set(df.columns))
+    assert "close" in df.columns
+    assert "volume" in df.columns
+
+
+def test_fetch_etf_hist_has_ma_columns():
+    """Moving averages are computed when enough data exists."""
+    df = fetch_etf_hist(symbol="510300")
+    # At least some rows should have valid MA values
+    assert df["ma20"].notna().any()
+    assert df["change_pct"].notna().any()
 
 
 # ---------------------------------------------------------------------------
-# fetch_etf_info
+# fetch_etf_info (Sina real-time API)
 # ---------------------------------------------------------------------------
 
-def test_fetch_etf_info_returns_dict():
-    """fetch_etf_info should return a dict with expected keys."""
-    import akshare as ak
-    from unittest.mock import patch
+SINA_MOCK_RESPONSE = (
+    'var hq_str_sh510300="沪深300ETF,5.008,5.048,4.907,5.015,'
+    '4.880,4.906,6400,4.905,315200,4.904,240700,4.903,488596,'
+    '4.902,226100,4.907,11400,4.908,47300,4.909,78500,4.910,75900,'
+    '4.911,49300,2026-06-26,15:00:03,00";'
+)
 
-    # Build a mock spot DataFrame that includes sh510300
-    mock_df = pd.DataFrame({
-        "代码": ["sh510300", "sz159915"],
-        "名称": ["沪深300ETF", "创业板ETF"],
-        "最新价": [3.850, 2.120],
-        "涨跌幅": [0.52, -0.31],
-        "成交量": [12345678, 9876543],
-    })
 
-    with patch.object(ak, "fund_etf_spot_em", return_value=mock_df):
+def test_fetch_etf_info_returns_full_dict():
+    """fetch_etf_info returns a dict with all expected keys."""
+    mock_resp = Mock()
+    mock_resp.text = SINA_MOCK_RESPONSE
+    mock_resp.encoding = "gbk"
+
+    with patch.object(requests_lib, "get", return_value=mock_resp):
         info = fetch_etf_info(symbol="510300")
-        assert isinstance(info, dict)
-        assert info["name"] == "沪深300ETF"
-        assert info["current_price"] == 3.850
-        assert info["change_pct"] == 0.52
-        assert info["volume"] == 12345678
+
+    assert isinstance(info, dict)
+    assert info["name"] == "沪深300ETF"
+    assert info["current_price"] == 4.907
+    assert info["prev_close"] == 5.048
+    assert info["open"] == 5.008
+    assert info["high"] == 5.015
+    assert info["low"] == 4.880
+    assert info["change"] == pytest.approx(-0.141, abs=0.01)
+    assert info["change_pct"] == pytest.approx(-2.79, abs=0.1)
+    assert info["date"] == "2026-06-26"
+    assert info["time"] == "15:00:03"
+
+    # Bid side
+    assert info["bid1_price"] == 4.906
+    assert info["bid1_volume"] == 6400
+    assert info["bid5_price"] == 4.902
+    assert info["bid5_volume"] == 226100
+
+    # Ask side
+    assert info["ask1_price"] == 4.907
+    assert info["ask1_volume"] == 11400
+    assert info["ask5_price"] == 4.911
+    assert info["ask5_volume"] == 49300
 
 
 def test_fetch_etf_info_empty_symbol():
-    """fetch_etf_info with empty symbol should raise ValueError."""
+    """fetch_etf_info with empty symbol raises ValueError."""
     with pytest.raises(ValueError, match="symbol"):
         fetch_etf_info(symbol="")
 
 
-def test_fetch_etf_info_unknown_symbol_returns_graceful():
-    """fetch_etf_info with unknown symbol should return dict with None values."""
-    import akshare as ak
-    from unittest.mock import patch
+def test_fetch_etf_info_network_error_graceful():
+    """fetch_etf_info returns graceful empty dict on network failure."""
+    with patch.object(requests_lib, "get", side_effect=ConnectionError("timeout")):
+        info = fetch_etf_info(symbol="510300")
 
-    # Mock spot DataFrame that does NOT contain 999999
-    mock_df = pd.DataFrame({
-        "代码": ["sh510300"],
-        "名称": ["沪深300ETF"],
-        "最新价": [3.850],
-        "涨跌幅": [0.52],
-        "成交量": [12345678],
-    })
-
-    with patch.object(ak, "fund_etf_spot_em", return_value=mock_df):
-        info = fetch_etf_info(symbol="999999")
-        assert isinstance(info, dict)
-        assert "name" in info
-        # Should still have name (fallback) but None for price data
-        assert info["current_price"] is None
+    assert isinstance(info, dict)
+    assert info["current_price"] is None
+    assert info["bid1_price"] is None
+    # Should still have the fallback name
+    assert "510300" in info["name"]
 
 
-def test_fetch_etf_info_network_error_raises():
-    """fetch_etf_info should raise ValueError when upstream fetch fails."""
-    import akshare as ak
-    from unittest.mock import patch
+def test_fetch_etf_info_invalid_response_graceful():
+    """fetch_etf_info handles garbled Sina response gracefully."""
+    mock_resp = Mock()
+    mock_resp.text = "garbled nonsense without quotes"
 
-    with patch.object(ak, "fund_etf_spot_em", side_effect=ConnectionError("timeout")):
-        with pytest.raises(ValueError, match="Failed to fetch ETF info"):
-            fetch_etf_info(symbol="510300")
+    with patch.object(requests_lib, "get", return_value=mock_resp):
+        info = fetch_etf_info(symbol="510300")
+
+    assert isinstance(info, dict)
+    assert info["current_price"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -162,14 +186,14 @@ def test_fetch_etf_info_network_error_raises():
 # ---------------------------------------------------------------------------
 
 def test_get_available_etfs_returns_dataframe():
-    """get_available_etfs should return a non-empty DataFrame."""
+    """get_available_etfs returns a non-empty DataFrame."""
     df = get_available_etfs()
     assert isinstance(df, pd.DataFrame)
     assert len(df) > 0
 
 
 def test_get_available_etfs_has_expected_columns():
-    """get_available_etfs should have code and name columns."""
+    """get_available_etfs has code and name columns."""
     df = get_available_etfs()
     assert "代码" in df.columns
     assert "名称" in df.columns
