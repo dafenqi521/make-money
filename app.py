@@ -52,7 +52,7 @@ start_date = date_map[date_range]
 
 st.sidebar.divider()
 st.sidebar.caption(
-    "数据来源: AKShare (新浪/东方财富)\n\n"
+    "数据源: 腾讯财经 + 百度 / 新浪 (AKShare)\n\n"
     "⚠️ 投资有风险，本系统仅供学习参考"
 )
 

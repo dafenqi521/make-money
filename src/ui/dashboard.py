@@ -33,14 +33,38 @@ def _fmt_vol(val):
     return f"{int(val)}"
 
 
+def _fmt_mcap(val):
+    """Format market cap (in 亿) as human-readable string."""
+    if val is None:
+        return "—"
+    if val >= 10000:
+        return f"{val/10000:.1f}万亿"
+    return f"{val:.0f}亿"
+
+
+def _fmt_pe(val):
+    """Format PE value — may be negative or very large."""
+    if val is None:
+        return "—"
+    if val <= 0:
+        return "亏损"
+    return f"{val:.1f}"
+
+
 def render_etf_overview(info: dict) -> None:
-    """Render ETF overview: name, date, price metrics, volume/amount."""
+    """Render ETF overview: name, date, price, valuation, and volume metrics.
+
+    Displays PE(TTM), PE(静), PB, market cap, and turnover rate
+    when available (from Tencent Finance API).
+    """
     name = info.get("name", "未知")
     date = info.get("date") or ""
     time = info.get("time") or ""
 
+    # Data source badge
+    source = "腾讯财经" if info.get("pe_ttm") is not None else "新浪"
     st.subheader(f"📊 {name}")
-    st.caption(f"数据时间: {date} {time}".strip())
+    st.caption(f"数据时间: {date} {time}  |  数据源: {source}".strip())
 
     price = info.get("current_price")
     change = info.get("change")
@@ -52,6 +76,13 @@ def render_etf_overview(info: dict) -> None:
     low = info.get("low")
     volume = info.get("volume")
     amount = info.get("amount")
+
+    # Valuation fields (Tencent exclusive)
+    pe_ttm = info.get("pe_ttm")
+    pe_static = info.get("pe_static")
+    pb = info.get("pb")
+    mcap_yi = info.get("mcap_yi")
+    turnover_pct = info.get("turnover_pct")
 
     # Row 1: Price core
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -86,6 +117,25 @@ def render_etf_overview(info: dict) -> None:
             st.metric("成交额", f"{amount/1_0000:.0f}万" if amount >= 10000 else f"{amount:.0f}")
         else:
             st.metric("成交额", "—")
+
+    # Row 3: Valuation (PE / PB / Market Cap / Turnover) — Tencent exclusive
+    has_valuation = any(v is not None for v in [pe_ttm, pe_static, pb, mcap_yi, turnover_pct])
+    if has_valuation:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            st.metric("PE(TTM)", _fmt_pe(pe_ttm),
+                      help="滚动市盈率 — 越低越低估，负数为亏损")
+        with c2:
+            st.metric("PE(静)", _fmt_pe(pe_static),
+                      help="静态市盈率 — 基于最近年报净利润")
+        with c3:
+            st.metric("PB", _fmt(pb, 2) if pb else "—",
+                      help="市净率 = 股价/每股净资产，<1 为破净")
+        with c4:
+            st.metric("总市值", _fmt_mcap(mcap_yi))
+        with c5:
+            st.metric("换手率", f"{turnover_pct:.2f}%" if turnover_pct else "—",
+                      help="日换手率，反映交易活跃度")
 
 
 def render_bid_ask_panel(info: dict) -> None:
