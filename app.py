@@ -143,6 +143,7 @@ with st.sidebar:
                      key="band_rescan_btn"):
             st.session_state.pop("band_selected_etf", None)
             st.session_state.pop("band_selected_info", None)
+            st.session_state["band_full_scan"] = True  # manual = full backtest
 
         # Lock to current holding if in position
         if has_position and holding_code:
@@ -155,9 +156,11 @@ with st.sidebar:
             selected_info = st.session_state.get("band_selected_info")
 
             if selected_etf is None:
-                with st.spinner("正在扫描候选ETF..."):
+                full_scan = st.session_state.pop("band_full_scan", False)
+                mode_label = "深度扫描(含回测)" if full_scan else "快速扫描"
+                with st.spinner(f"正在{mode_label}候选ETF..."):
                     from src.strategy.short_term_band import ShortTermBandStrategy
-                    best = ShortTermBandStrategy.select_best_etf()
+                    best = ShortTermBandStrategy.select_best_etf(quick=not full_scan)
                     if best:
                         selected_etf = best["code"]
                         selected_info = best

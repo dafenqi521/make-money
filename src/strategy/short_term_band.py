@@ -1310,25 +1310,33 @@ class ShortTermBandStrategy(BaseStrategy):
     def select_best_etf(
         candidates: list[dict] | None = None,
         max_price: float = 20.0,
+        quick: bool = True,
     ) -> dict | None:
         """Select the best ETF for short-term band trading.
 
-        Scores each candidate on 4 dimensions:
-        1. Mini-backtest (40%) — historical strategy performance
-        2. Volatility (25%) — amplitude × turnover × volume
-        3. Trend quality (20%) — current pullback / entry timing
-        4. Liquidity (15%) — bid-ask spread tightness
+        Two modes:
+        - **quick** (default): volatility + trend + liquidity only. 1 batch API
+          call for quotes, parallel history fetch.  Returns in ~1-2 seconds.
+        - **full** (quick=False): adds mini-backtest (40%).  Takes longer but
+          more accurate.  Used by "重新扫描" button.
 
-        Returns:
-            Best candidate dict, or None if no suitable ETF found.
+        Scoring (quick): volatility 45% + trend 30% + liquidity 25%
+        Scoring (full):  backtest 40% + volatility 25% + trend 20% + liquidity 15%
         """
-        from src.data.fetcher import fetch_etf_info, fetch_etf_hist
+        from src.data.fetcher import fetch_etf_hist, fetch_multi_etf_info
 
         pool = candidates if candidates is not None else list(CANDIDATE_ETFS)
 
-        # Phase 1 — parallel historical data fetch
+        # ── Batch real-time quotes (1 API call for all) ──
+        codes = [etf["code"] for etf in pool]
+        try:
+            all_info = fetch_multi_etf_info(codes)
+        except Exception:
+            all_info = {}
+
+        # ── Parallel history fetch (needed for trend quality in both modes) ──
         hist_cache: dict[str, pd.DataFrame | None] = {}
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             future_map = {
                 executor.submit(fetch_etf_hist, etf["code"]): etf["code"]
                 for etf in pool
@@ -1340,16 +1348,14 @@ class ShortTermBandStrategy(BaseStrategy):
                 except Exception:
                     hist_cache[code] = None
 
-        # Phase 2 — score each candidate
+        # ── Score each candidate ──
         scored: list[dict] = []
         params = ShortTermBandStrategy().get_default_params()
 
         for etf in pool:
             code = etf["code"]
-
-            try:
-                info = fetch_etf_info(code)
-            except Exception:
+            info = all_info.get(code)
+            if info is None:
                 continue
 
             current_price = info.get("current_price")
@@ -1358,29 +1364,29 @@ class ShortTermBandStrategy(BaseStrategy):
             if current_price > max_price:
                 continue
 
-            # 1. Volatility score
             vol_score = ShortTermBandStrategy._compute_volatility_score(info)
-
-            # 2. Liquidity score
             liq_score = ShortTermBandStrategy._compute_liquidity_score(info)
 
-            # 3. Mini-backtest
-            try:
-                bt_score, trades = ShortTermBandStrategy._run_mini_backtest(code, hist_cache)
-            except Exception:
-                bt_score = 0.0
-                trades = []
-
-            # 4. Trend quality
+            # Trend quality from cached history
             hist_df = hist_cache.get(code)
             trend_score = ShortTermBandStrategy._compute_trend_quality(hist_df, params) if hist_df is not None else 0.0
 
-            # Composite: 40/25/20/15
-            if bt_score > 0:
-                final_score = round(bt_score * 0.4 + vol_score * 0.25 + trend_score * 0.2 + liq_score * 0.15, 2)
+            if quick:
+                # Fast mode: no backtest
+                final_score = round(vol_score * 0.45 + trend_score * 0.30 + liq_score * 0.25, 2)
+                bt_score = 0.0
+                trades = []
             else:
-                # Backtest failed — weight more on other factors
-                final_score = round(vol_score * 0.4 + trend_score * 0.35 + liq_score * 0.25, 2)
+                # Full mode: include mini-backtest
+                try:
+                    bt_score, trades = ShortTermBandStrategy._run_mini_backtest(code, hist_cache)
+                except Exception:
+                    bt_score = 0.0
+                    trades = []
+                if bt_score > 0:
+                    final_score = round(bt_score * 0.4 + vol_score * 0.25 + trend_score * 0.2 + liq_score * 0.15, 2)
+                else:
+                    final_score = round(vol_score * 0.45 + trend_score * 0.30 + liq_score * 0.25, 2)
 
             total_return_pct = sum(t["pnl_pct"] for t in trades) if trades else 0.0
             win_count = sum(1 for t in trades if t["winning"]) if trades else 0
