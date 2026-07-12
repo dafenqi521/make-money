@@ -182,8 +182,8 @@ class FastBand4PctStrategy(BaseStrategy):
         return {
             "entry_threshold": {
                 "label": "入场门槛", "type": "slider",
-                "min": 3, "max": 8, "step": 1,
-                "help": "综合评分≥此值买入（默认4，市场横盘也能触发）",
+                "min": 3, "max": 10, "step": 1,
+                "help": "综合评分≥此值买入（满分12，默认5，市场横盘也能触发）",
             },
             "take_profit_pct": {
                 "label": "止盈线", "type": "slider",
@@ -218,16 +218,23 @@ class FastBand4PctStrategy(BaseStrategy):
         }
 
     # ------------------------------------------------------------------
-    # Entry scoring (0-10)
+    # Entry scoring (0-12，7因子)
     # ------------------------------------------------------------------
 
     @staticmethod
     def _compute_entry_score(
         df_sorted: pd.DataFrame, idx: int, params: dict,
+        info: dict | None = None,
     ) -> dict:
-        """Score today's entry quality (0-10).
+        """Score today's entry quality (0-12，≥5买入).
 
-        Returns dict with total_score and factor breakdown + details list.
+        7 factors:
+        1. 近3日跌幅 (0-4)
+        2. K线反转形态 (0-2)
+        3. RSI超卖 (0-2)
+        4. MA20支撑 (0-2)
+        5. 量比 (0-1) — 放量=活跃
+        6. 盘中位置 (0-1) — 接近日内低点=好入场
         """
         row = df_sorted.iloc[idx]
         close = float(row["close"])
@@ -240,7 +247,7 @@ class FastBand4PctStrategy(BaseStrategy):
         if idx >= decline_days:
             prev_close = float(df_sorted.iloc[idx - decline_days]["close"])
             if prev_close > 0:
-                decline_pct = (prev_close - close) / prev_close  # positive = down, negative = up
+                decline_pct = (prev_close - close) / prev_close
                 if decline_pct >= 0.03:
                     decline_score = 4.0
                 elif decline_pct >= 0.02:
@@ -254,16 +261,15 @@ class FastBand4PctStrategy(BaseStrategy):
                 elif decline_pct > 0.001:
                     decline_score = 1.5
                 elif decline_pct > -0.005:
-                    decline_score = 1.0  # essentially flat, still some points
-                # Format: show direction clearly
+                    decline_score = 1.0
                 if decline_pct >= 0.005:
                     details.append(f"近{decline_days}日跌{decline_pct:.1%} → +{decline_score:.1f}")
                 elif decline_pct > 0:
                     details.append(f"近{decline_days}日微跌{decline_pct:.2%} → +{decline_score:.1f}")
                 elif decline_pct >= -0.005:
-                    details.append(f"近{decline_days}日横盘{decline_pct:+.2%} → +{decline_score:.1f}")
+                    details.append(f"近{decline_days}日横盘 → +{decline_score:.1f}")
                 else:
-                    details.append(f"近{decline_days}日涨{abs(decline_pct):.1%}（逆势上涨，不加分） → +0")
+                    details.append(f"近{decline_days}日涨{abs(decline_pct):.1%}（不加分）→ +0")
         if not details:
             details.append("近N日跌幅 数据不足 → +0")
 
@@ -293,7 +299,7 @@ class FastBand4PctStrategy(BaseStrategy):
         if rsi_val is None:
             details.append("RSI数据不足 → +0")
 
-        # ── Factor 4: MA20 support proximity (0-2) ──
+        # ── Factor 4: MA20 support (0-2) ──
         support_score = 0.0
         if "_ma20" in df_sorted.columns:
             ma20 = df_sorted.at[idx, "_ma20"]
@@ -302,14 +308,58 @@ class FastBand4PctStrategy(BaseStrategy):
                 if abs(dist) <= 0.02:
                     support_score = 2.0
                     details.append(f"紧贴MA20（偏离{dist:+.1%}）→ +2")
-                elif abs(dist) <= 0.03:
+                elif abs(dist) <= 0.04:
                     support_score = 1.0
                     details.append(f"靠近MA20（偏离{dist:+.1%}）→ +1")
                 else:
                     details.append(f"距MA20 {dist:+.1%} → +0")
+            else:
+                details.append("MA20无数据 → +0")
+        else:
+            details.append("MA20未计算 → +0")
 
-        total = round(decline_score + reversal_score + rsi_score + support_score, 1)
-        total = max(0.0, min(10.0, total))
+        # ── Factor 5: Volume ratio 量比 (0-1) ──
+        vol_score = 0.0
+        # Prefer real-time vol_ratio from info dict
+        if info and info.get("vol_ratio"):
+            vol_ratio = float(info["vol_ratio"])
+        elif idx >= 5 and "volume" in df_sorted.columns:
+            vol_today = float(row.get("volume", 0) or 0)
+            avg_vol_5 = float(np.mean([
+                float(df_sorted.iloc[i].get("volume", 0) or 0)
+                for i in range(max(0, idx - 5), idx)
+            ]))
+            vol_ratio = vol_today / avg_vol_5 if avg_vol_5 > 0 else 1.0
+        else:
+            vol_ratio = 1.0
+
+        if vol_ratio >= 1.5:
+            vol_score = 1.0
+            details.append(f"量比{vol_ratio:.1f}x（放量活跃）→ +1")
+        elif vol_ratio >= 1.0:
+            vol_score = 0.5
+            details.append(f"量比{vol_ratio:.1f}x（正常）→ +0.5")
+        else:
+            details.append(f"量比{vol_ratio:.1f}x（缩量）→ +0")
+
+        # ── Factor 6: Intraday position 盘中位置 (0-1) ──
+        intraday_score = 0.0
+        if info:
+            day_high = info.get("high")
+            day_low = info.get("low")
+            if day_high and day_low and day_high > day_low:
+                position = (close - day_low) / (day_high - day_low)  # 0=at low, 1=at high
+                if position <= 0.3:
+                    intraday_score = 1.0
+                    details.append(f"盘中低位（{position:.0%}区间）→ +1")
+                elif position <= 0.5:
+                    intraday_score = 0.5
+                    details.append(f"盘中中位（{position:.0%}区间）→ +0.5")
+                else:
+                    details.append(f"盘中高位（{position:.0%}区间）→ +0")
+
+        total = round(decline_score + reversal_score + rsi_score + support_score + vol_score + intraday_score, 1)
+        total = max(0.0, min(12.0, total))
 
         # Count consecutive down days
         consec = 0
@@ -328,6 +378,8 @@ class FastBand4PctStrategy(BaseStrategy):
             "rsi": rsi_score,
             "rsi_value": rsi_val,
             "support": support_score,
+            "volume_ratio": vol_score,
+            "intraday": intraday_score,
             "consecutive_down": consec,
             "details": details,
         }
@@ -498,7 +550,7 @@ class FastBand4PctStrategy(BaseStrategy):
         if len(df_sorted) < min_bars:
             return LiveSignal(action="hold", reason=f"数据不足（需≥{min_bars}根K线）", urgency_level="low")
 
-        score_result = self._compute_entry_score(df_sorted, len(df_sorted) - 1, params)
+        score_result = self._compute_entry_score(df_sorted, len(df_sorted) - 1, params, info=info)
         score = score_result["total_score"]
 
         if score < threshold:
@@ -556,7 +608,9 @@ class FastBand4PctStrategy(BaseStrategy):
 
         # Card 1: Entry score
         try:
-            score_result = self._compute_entry_score(df_sorted, len(df_sorted) - 1, params)
+            score_result = self._compute_entry_score(
+                df_sorted, len(df_sorted) - 1, params, info=info,
+            )
         except Exception:
             score_result = None
 
@@ -567,14 +621,16 @@ class FastBand4PctStrategy(BaseStrategy):
                 {"label": "K线反转", "score": int(score_result["reversal"]), "max": 2},
                 {"label": "RSI超卖", "score": int(score_result["rsi"]), "max": 2},
                 {"label": "均线支撑", "score": int(score_result["support"]), "max": 2},
+                {"label": "量比", "score": int(score_result["volume_ratio"]), "max": 1},
+                {"label": "盘中位置", "score": int(score_result["intraday"]), "max": 1},
             ]
             cards.append(DashboardCard(
                 card_id="entry_score",
-                title=f"入场评分 · {score_result['total_score']:.0f}/10（需≥{threshold}）",
+                title=f"入场评分 · {score_result['total_score']:.0f}/12（需≥{threshold}）",
                 card_type="progress",
                 content={
-                    "value_pct": score_result["total_score"] * 10,
-                    "max_value": 100, "threshold": threshold * 10,
+                    "value_pct": score_result["total_score"] / 12.0 * 100,
+                    "max_value": 100, "threshold": threshold / 12.0 * 100,
                     "factors": factors, "details": score_result["details"],
                     "ready": score_result["total_score"] >= threshold,
                 },
@@ -710,15 +766,19 @@ class FastBand4PctStrategy(BaseStrategy):
                 pe_score = 5.0  # no PE data, neutral
 
             # ═══ 2. 入场时机分 (0-50) ═══
-            entry_score = 0.0
+            entry_score_50 = 0.0
+            entry_raw = 0.0  # original 0-12 score for display
             entry_details: list[str] = []
             hist = hist_cache.get(code)
             if hist is not None and not hist.empty and len(hist) >= 16:
                 h = hist.sort_values("date", ascending=True).reset_index(drop=True)
                 h["_ma20"] = h["close"].rolling(window=20, min_periods=20).mean()
                 try:
-                    result = FastBand4PctStrategy._compute_entry_score(h, len(h) - 1, params)
-                    entry_score = result["total_score"] / 10.0 * 50.0  # scale to 0-50
+                    result = FastBand4PctStrategy._compute_entry_score(
+                        h, len(h) - 1, params, info=info,
+                    )
+                    entry_raw = result["total_score"]  # 0-12
+                    entry_score_50 = entry_raw / 12.0 * 50.0  # scale to 0-50
                     entry_details = result["details"]
                 except Exception:
                     pass
@@ -731,7 +791,7 @@ class FastBand4PctStrategy(BaseStrategy):
             turnover = info.get("turnover_rate", 0) or 0
             liq_score = min(turnover * 3, 15.0)  # 5% turnover → 15
 
-            total = round(pe_score + entry_score + vol_score + liq_score, 1)
+            total = round(pe_score + entry_score_50 + vol_score + liq_score, 1)
 
             # PE status badge
             if pe_pct is not None:
@@ -744,33 +804,32 @@ class FastBand4PctStrategy(BaseStrategy):
             else:
                 pe_badge = "⚪ PE无数据"
 
-            entry_raw = round(entry_score / 50.0 * 10, 1)
 
             # ═══ Action recommendation ═══
             pe_is_low = pe_pct is not None and pe_pct < 30
             pe_is_high = pe_pct is not None and pe_pct >= 70
 
-            if entry_raw >= 6 and pe_is_low:
+            if entry_raw >= 7 and pe_is_low:
                 action = "🔥 强烈买入"
                 action_color = "strong_buy"
                 action_detail = "低估+超跌反弹信号，最佳入场时机"
-            elif entry_raw >= 4 and pe_is_low:
+            elif entry_raw >= 5 and pe_is_low:
                 action = "✅ 建议买入"
                 action_color = "buy"
                 action_detail = "低估区间+入场信号触发"
-            elif entry_raw >= 4 and not pe_is_high:
+            elif entry_raw >= 5 and not pe_is_high:
                 action = "✅ 可以买入"
                 action_color = "buy"
                 action_detail = "入场信号触发，可轻仓入场"
-            elif entry_raw >= 4 and pe_is_high:
+            elif entry_raw >= 5 and pe_is_high:
                 action = "🟡 短线博弈"
                 action_color = "speculative"
                 action_detail = "反弹信号好但PE偏高，快进快出"
-            elif entry_raw >= 2.5 and pe_is_low:
+            elif entry_raw >= 3 and pe_is_low:
                 action = "⏳ 接近买点"
                 action_color = "watch"
                 action_detail = "低估区间，再等一个小回调"
-            elif entry_raw >= 2.5:
+            elif entry_raw >= 3:
                 action = "⏳ 继续等待"
                 action_color = "wait"
                 action_detail = "反弹信号还不够强"
