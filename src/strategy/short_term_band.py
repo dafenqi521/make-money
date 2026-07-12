@@ -21,52 +21,35 @@ from src.strategy.signals import DashboardCard, LiveSignal
 
 
 # =============================================================================
-# Candidate ETF pool — 2 leaders per sector, ~20 ETFs, all affordable (< ¥15)
+# Candidate ETF pool — 14 core broad-market index ETFs, fast scanning
 # =============================================================================
 
 CANDIDATE_ETFS: list[dict] = [
-    # ── 宽基指数 (5) — 每类市场代表一只 ──
+    # ── 大盘蓝筹 (3) ──
     {"code": "510300", "name": "沪深300ETF",        "approx_price": 3.9,  "category": "broad"},
+    {"code": "510050", "name": "上证50ETF",          "approx_price": 2.7,  "category": "broad"},
+    {"code": "159901", "name": "深证100ETF",         "approx_price": 3.8,  "category": "broad"},
+
+    # ── 中盘 (2) ──
     {"code": "510500", "name": "中证500ETF",         "approx_price": 5.8,  "category": "broad"},
+    {"code": "515800", "name": "中证800ETF",         "approx_price": 2.5,  "category": "broad"},
+
+    # ── 小盘/微盘 (2) ──
+    {"code": "512100", "name": "中证1000ETF",        "approx_price": 2.3,  "category": "broad"},
+    {"code": "563300", "name": "中证2000ETF",        "approx_price": 0.9,  "category": "broad"},
+
+    # ── 创业/科创 (3) ──
     {"code": "159915", "name": "创业板ETF",          "approx_price": 2.2,  "category": "broad"},
     {"code": "588000", "name": "科创50ETF",          "approx_price": 0.9,  "category": "broad"},
-    {"code": "512100", "name": "中证1000ETF",        "approx_price": 2.3,  "category": "broad"},
+    {"code": "159781", "name": "双创50ETF",          "approx_price": 1.1,  "category": "broad"},
 
-    # ── 半导体/芯片 (2) ──
-    {"code": "512480", "name": "半导体ETF",          "approx_price": 1.2,  "category": "industry"},
-    {"code": "159995", "name": "芯片ETF",            "approx_price": 1.1,  "category": "industry"},
+    # ── 新宽基 (2) ──
+    {"code": "159593", "name": "中证A50ETF",         "approx_price": 1.0,  "category": "broad"},
+    {"code": "159338", "name": "中证A500ETF",        "approx_price": 0.9,  "category": "broad"},
 
-    # ── 军工 (2) ──
-    {"code": "512660", "name": "军工ETF",            "approx_price": 1.1,  "category": "industry"},
-    {"code": "512710", "name": "军工龙头ETF",        "approx_price": 0.7,  "category": "industry"},
-
-    # ── 新能源 (2) ──
-    {"code": "159766", "name": "新能源车ETF",        "approx_price": 1.0,  "category": "industry"},
-    {"code": "515790", "name": "光伏ETF",            "approx_price": 1.2,  "category": "industry"},
-
-    # ── 消费 (2) ──
-    {"code": "512690", "name": "酒ETF",              "approx_price": 1.5,  "category": "industry"},
-    {"code": "516410", "name": "消费ETF",            "approx_price": 0.9,  "category": "defensive"},
-
-    # ── 医药 (2) ──
-    {"code": "512010", "name": "医药ETF",            "approx_price": 0.5,  "category": "defensive"},
-    {"code": "512170", "name": "医疗ETF",            "approx_price": 0.4,  "category": "defensive"},
-
-    # ── 金融 (2) ──
-    {"code": "512880", "name": "证券ETF",            "approx_price": 0.9,  "category": "industry"},
-    {"code": "512800", "name": "银行ETF",            "approx_price": 1.2,  "category": "defensive"},
-
-    # ── 互联网/科技 (2) ──
-    {"code": "513050", "name": "中概互联ETF",         "approx_price": 1.2,  "category": "cross_border"},
-    {"code": "513330", "name": "恒生互联ETF",         "approx_price": 0.6,  "category": "cross_border"},
-
-    # ── 跨境 (2) ──
-    {"code": "513100", "name": "纳指ETF",            "approx_price": 1.5,  "category": "cross_border"},
-    {"code": "159920", "name": "恒生ETF",            "approx_price": 1.1,  "category": "cross_border"},
-
-    # ── 资源/商品 (2) ──
-    {"code": "516820", "name": "稀土ETF",            "approx_price": 1.0,  "category": "industry"},
-    {"code": "518880", "name": "黄金ETF",            "approx_price": 4.5,  "category": "commodity"},
+    # ── 策略宽基 (2) ──
+    {"code": "510880", "name": "中证红利ETF",        "approx_price": 3.0,  "category": "broad"},
+    {"code": "512890", "name": "红利低波ETF",        "approx_price": 1.5,  "category": "broad"},
 ]
 
 
@@ -148,7 +131,7 @@ class ShortTermBandStrategy(BaseStrategy):
             "金字塔3层建仓（50%→30%→20%），5级分级出场（硬止损→时间→分级止盈→移动止损→MA辅助）。\n\n"
             "**入场**: 0-100综合评分≥60买入首仓，回调加仓至3层。\n"
             "**出场**: -3%硬止损 | +3%卖半仓/+5%清仓 | 盈利>2%保本止损 | 5天时间止盈。\n"
-            "**选基**: 从21只龙头ETF（每行业2只）中按回测(40%)+波动率(25%)+趋势质量(20%)+流动性(15%)自动挑选。\n\n"
+            "**选基**: 从14只核心宽基ETF中按回测(40%)+波动率(25%)+趋势质量(20%)+流动性(15%)自动挑选。\n\n"
             "目标：周盈利3%，2000元级别小资金友好。"
         )
 
