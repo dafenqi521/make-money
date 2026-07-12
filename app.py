@@ -335,46 +335,73 @@ if strategy.name == "4%快速波段" and (not symbol or len(symbol) != 6):
     top5 = st.session_state.get("fastband_top5", [])
 
     if top5:
+        # ── Overall summary ──
+        strong_buys = [e for e in top5 if e.get("action_color") in ("strong_buy", "buy")]
+        watches = [e for e in top5 if e.get("action_color") in ("watch", "speculative")]
+        avoids = [e for e in top5 if e.get("action_color") in ("avoid", "skip")]
+
+        summary_parts = []
+        if strong_buys:
+            summary_parts.append(f"🔥 **{len(strong_buys)}只建议买入**：{'、'.join(e['code'] for e in strong_buys)}")
+        if watches:
+            summary_parts.append(f"⏳ **{len(watches)}只值得关注**：{'、'.join(e['code'] for e in watches)}")
+        if avoids:
+            summary_parts.append(f"❌ **{len(avoids)}只建议回避**：{'、'.join(e['code'] for e in avoids)}")
+
+        if summary_parts:
+            st.info("  |  ".join(summary_parts))
+
         st.caption("PE低估(25%) + 入场时机(35%) + 波动性(25%) + 流动性(15%)，点击一只开始分析")
 
         for i, etf in enumerate(top5):
-            medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i]
-
-            # PE badge
+            action = etf.get("action", "?")
+            action_detail = etf.get("action_detail", "")
+            action_color = etf.get("action_color", "skip")
             pe_badge = etf.get("pe_badge", "⚪ PE无数据")
-
-            # Entry score details
             entry_raw = etf.get("entry_score_raw", 0)
-            if entry_raw >= 5:
-                entry_badge = f"🟢 入场{entry_raw:.0f}/10"
-            elif entry_raw >= 3:
-                entry_badge = f"🟡 入场{entry_raw:.0f}/10"
-            else:
-                entry_badge = f"🔴 入场{entry_raw:.0f}/10"
+
+            # Color bar based on action
+            color_map = {
+                "strong_buy": ("#16a34a", "#f0fdf4"),
+                "buy": ("#16a34a", "#f0fdf4"),
+                "speculative": ("#f59e0b", "#fffbeb"),
+                "watch": ("#0891b2", "#ecfeff"),
+                "wait": ("#64748b", "#f8fafc"),
+                "track": ("#7c3aed", "#f5f3ff"),
+                "avoid": ("#dc2626", "#fef2f2"),
+                "skip": ("#94a3b8", "#f8fafc"),
+            }
+            bar_color, bar_bg = color_map.get(action_color, ("#94a3b8", "#f8fafc"))
 
             with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([1.5, 2, 2, 1.5])
+                c1, c2, c3, c4 = st.columns([1.2, 2.3, 2.5, 1.5])
 
                 with c1:
-                    st.markdown(f"## {medal}")
-                    st.metric("综合评分", f"{etf['score']:.0f}/100")
+                    st.markdown(
+                        f'<div style="background:{bar_bg}; border-left:4px solid {bar_color}; '
+                        f'padding:12px 8px; border-radius:4px; text-align:center;">'
+                        f'<div style="font-size:1.6rem; font-weight:700; color:{bar_color};">{action}</div>'
+                        f'<div style="font-size:0.7rem; color:#64748b;">综合 {etf["score"]:.0f}/100</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
                 with c2:
                     st.markdown(f"**{etf['code']}** {etf.get('name_from_api', etf['name'])}")
-                    st.caption(f"💰 ¥{etf['current_price']:.3f}")
-                    st.caption(pe_badge)
-                    st.caption(entry_badge)
+                    st.caption(f"💰 ¥{etf['current_price']:.3f}  |  {pe_badge}")
+                    st.caption(f"🎯 入场{entry_raw:.0f}/10  |  振幅{etf['amplitude']:.1f}%")
 
                 with c3:
-                    # Score breakdown
-                    st.caption(f"PE{etf['pe_score']:.0f} + 入场{etf['entry_score_raw']:.0f} + 波动{etf['volatility_score']:.0f} + 流动{etf['liquidity_score']:.0f}")
+                    st.caption(f"📊 PE{etf['pe_score']:.0f} + 入场{entry_raw:.0f} + 波动{etf['volatility_score']:.0f} + 流动{etf['liquidity_score']:.0f}")
+                    st.caption(f"💡 {action_detail}")
                     details = etf.get("score_details", [])
                     if details:
                         st.caption(" | ".join(details[:2]))
 
                 with c4:
-                    if st.button(f"📊 查看 {etf['code']}", key=f"fastband_pick_{i}",
-                                 type="primary", use_container_width=True):
+                    if st.button(f"📊 分析 {etf['code']}", key=f"fastband_pick_{i}",
+                                 type="primary" if action_color in ("strong_buy", "buy") else "secondary",
+                                 use_container_width=True):
                         st.session_state["fastband_selected_symbol"] = etf["code"]
                         st.session_state["fastband_selected_info"] = etf
                         st.rerun()

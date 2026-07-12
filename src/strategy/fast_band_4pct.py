@@ -731,6 +731,45 @@ class FastBand4PctStrategy(BaseStrategy):
             else:
                 pe_badge = "⚪ PE无数据"
 
+            entry_raw = round(entry_score / 35.0 * 10, 1)
+
+            # ═══ Action recommendation ═══
+            pe_is_low = pe_pct is not None and pe_pct < 30
+            pe_is_high = pe_pct is not None and pe_pct >= 70
+
+            if entry_raw >= 5 and pe_is_low:
+                action = "🔥 强烈买入"
+                action_color = "strong_buy"
+                action_detail = "低估+超跌反弹信号，最佳入场时机"
+            elif entry_raw >= 5 and not pe_is_high:
+                action = "✅ 建议买入"
+                action_color = "buy"
+                action_detail = "反弹信号明确，可轻仓入场"
+            elif entry_raw >= 5 and pe_is_high:
+                action = "🟡 短线博弈"
+                action_color = "speculative"
+                action_detail = "反弹信号好但PE偏高，快进快出"
+            elif entry_raw >= 3 and pe_is_low:
+                action = "⏳ 接近买点"
+                action_color = "watch"
+                action_detail = "低估但信号还不够强，再等1-2天"
+            elif entry_raw >= 3 and not pe_is_high:
+                action = "⏳ 继续等待"
+                action_color = "wait"
+                action_detail = "估值合理但反弹信号不明显"
+            elif pe_is_low:
+                action = "👀 值得关注"
+                action_color = "track"
+                action_detail = "低估区但尚无反弹信号，持续跟踪"
+            elif pe_is_high:
+                action = "🔴 建议回避"
+                action_color = "avoid"
+                action_detail = "PE高估，不建议短线参与"
+            else:
+                action = "❌ 暂不建议"
+                action_color = "skip"
+                action_detail = "估值合理但缺乏入场信号"
+
             scored.append({
                 **etf,
                 "current_price": cp,
@@ -738,13 +777,16 @@ class FastBand4PctStrategy(BaseStrategy):
                 "turnover_rate": turnover,
                 "score": total,
                 "pe_score": round(pe_score, 1),
-                "entry_score_raw": round(entry_score / 35.0 * 10, 1),  # back to 0-10
+                "entry_score_raw": entry_raw,
                 "volatility_score": round(vol_score, 1),
                 "liquidity_score": round(liq_score, 1),
                 "pe_percentile": pe_pct,
                 "pe_badge": pe_badge,
                 "name_from_api": info.get("name", etf["name"]),
                 "score_details": entry_details[:3],
+                "action": action,
+                "action_color": action_color,
+                "action_detail": action_detail,
             })
 
         if not scored:
