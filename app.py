@@ -111,42 +111,66 @@ with st.sidebar:
     screener_code = st.session_state.get("screener_selected_code", "")
 
     if strategy.name == "短线波段":
-        # Auto-select best ETF for short-term band trading
-        st.caption(f"🔍 短线波段 · 自动选标的")
+        # Auto-select best ETF for short-term band trading.
+        # Lock to current ETF while holding a position; re-scan on empty.
+        st.caption("🔍 短线波段 · 自动选标的")
 
-        # Re-select ETF weekly or when user clicks
+        # Check if we have an open position
+        has_position = False
+        holding_code = None
+        if "portfolio" in st.session_state:
+            pm = st.session_state["portfolio"]
+            for h in pm.list_holdings() if hasattr(pm, "list_holdings") else []:
+                if h.shares > 0:
+                    has_position = True
+                    holding_code = h.code
+                    break
+
+        # If we had a position but now it's gone → clear cache to trigger re-scan
+        prev_code = st.session_state.get("band_selected_etf")
+        if prev_code and not has_position:
+            # Position was closed — force re-scan next time
+            if st.session_state.get("band_had_position"):
+                st.session_state.pop("band_selected_etf", None)
+                st.session_state.pop("band_selected_info", None)
+        st.session_state["band_had_position"] = has_position
+
+        # Re-select when user clicks
         if st.button("🔄 重新扫描最优标的", type="secondary", use_container_width=True,
                      key="band_rescan_btn"):
             st.session_state.pop("band_selected_etf", None)
             st.session_state.pop("band_selected_info", None)
 
-        selected_etf = st.session_state.get("band_selected_etf")
-        selected_info = st.session_state.get("band_selected_info")
+        # Lock to current holding if in position
+        if has_position and holding_code:
+            symbol = holding_code
+            st.success(f"📌 持仓中：{holding_code}（卖出后自动换标的）")
+            st.session_state["band_selected_etf"] = holding_code
+        else:
+            # No position — auto-scan for best ETF
+            selected_etf = st.session_state.get("band_selected_etf")
+            selected_info = st.session_state.get("band_selected_info")
 
-        if selected_etf is None:
-            with st.spinner("正在扫描10只候选ETF..."):
-                from src.strategy.short_term_band import ShortTermBandStrategy
-                best = ShortTermBandStrategy.select_best_etf()
-                if best:
-                    selected_etf = best["code"]
-                    selected_info = best
-                    st.session_state["band_selected_etf"] = selected_etf
-                    st.session_state["band_selected_info"] = selected_info
-                else:
-                    selected_etf = "510300"
-                    selected_info = {"code": "510300", "name": "沪深300ETF", "current_price": None}
+            if selected_etf is None:
+                with st.spinner("正在扫描10只候选ETF..."):
+                    from src.strategy.short_term_band import ShortTermBandStrategy
+                    best = ShortTermBandStrategy.select_best_etf()
+                    if best:
+                        selected_etf = best["code"]
+                        selected_info = best
+                        st.session_state["band_selected_etf"] = selected_etf
+                        st.session_state["band_selected_info"] = selected_info
 
-        # Show selected ETF
-        if selected_info:
-            price_str = f"¥{selected_info.get('current_price', '?'):.3f}" if selected_info.get("current_price") else "?"
-            amp_str = f"{selected_info.get('amplitude', 0):.1f}%" if selected_info.get("amplitude") else "?"
-            st.info(
-                f"📌 **{selected_info.get('code')} {selected_info.get('name_from_api', selected_info.get('name', ''))}**\n\n"
-                f"当前价：{price_str} | 振幅：{amp_str} | 评分：{selected_info.get('score', '?')}"
-            )
+            if selected_info:
+                price_str = f"¥{selected_info.get('current_price', '?'):.3f}" if selected_info.get("current_price") else "?"
+                amp_str = f"{selected_info.get('amplitude', 0):.1f}%" if selected_info.get("amplitude") else "?"
+                st.info(
+                    f"📌 **{selected_info.get('code')} {selected_info.get('name_from_api', selected_info.get('name', ''))}**\n\n"
+                    f"当前价：{price_str} | 振幅：{amp_str} | 评分：{selected_info.get('score', '?')}"
+                )
 
-        symbol = selected_etf
-        # Store in session for the main area
+            symbol = selected_etf if selected_etf else "510300"
+
         st.session_state["band_current_code"] = symbol
     else:
         default_code = screener_code if screener_code else "510300"
