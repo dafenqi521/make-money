@@ -155,7 +155,7 @@ with st.sidebar:
             selected_info = st.session_state.get("band_selected_info")
 
             if selected_etf is None:
-                with st.spinner("正在扫描10只候选ETF..."):
+                with st.spinner("正在扫描候选ETF..."):
                     from src.strategy.short_term_band import ShortTermBandStrategy
                     best = ShortTermBandStrategy.select_best_etf()
                     if best:
@@ -400,7 +400,8 @@ else:
     render_etf_overview(info)
 
     # ── 1.5 PE Percentile Overview (when available) ────────────────
-    if pe_percentile is not None:
+    # Skip for band strategies — PE valuation is irrelevant for short-term trading
+    if pe_percentile is not None and strategy.name != "短线波段":
         render_pe_percentile_overview(pe_percentile)
 
     # ── 1.7 Portfolio context (needed by both signal panel & strategy) ──
@@ -411,11 +412,13 @@ else:
         _has_position = _pf_ctx.get("has_position", False) if _pf_ctx else False
 
     # ── 1.8 Multi-Factor Daily Signal Panel ───────────────────────
-    daily_signal = compute_daily_signal(
-        df, info, pe_percentile=pe_percentile, macro_pulse=macro_pulse,
-        has_position=_has_position,
-    )
-    render_signal_panel(daily_signal)
+    # Skip for band strategies — their own live signal + dashboard cards are the authority
+    if strategy.name != "短线波段":
+        daily_signal = compute_daily_signal(
+            df, info, pe_percentile=pe_percentile, macro_pulse=macro_pulse,
+            has_position=_has_position,
+        )
+        render_signal_panel(daily_signal)
 
     # ── 2. Live Signal ────────────────────────────────────────────
     try:
@@ -456,7 +459,8 @@ else:
     st.divider()
 
     # ── 6.5 PE Band Chart (when PE history available) ───────────
-    if pe_percentile is not None:
+    # Skip for band strategies
+    if pe_percentile is not None and strategy.name != "短线波段":
         with st.expander(
             f"📈 PE Band · {pe_percentile.index_name}（历史PE走势图）",
             expanded=False,
