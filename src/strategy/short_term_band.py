@@ -8,6 +8,7 @@ Includes auto ETF selection from a curated high-liquidity pool.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -523,13 +524,153 @@ class ShortTermBandStrategy(BaseStrategy):
         return cards
 
     # ------------------------------------------------------------------
-    # ETF selection (static — updated weekly or on close)
+    # ETF selection (static — re-scans on position close or manual click)
     # ------------------------------------------------------------------
 
     @staticmethod
     def get_candidate_pool() -> list[dict]:
         """Return the curated candidate ETF list."""
         return list(CANDIDATE_ETFS)
+
+    # -- Scoring helpers --------------------------------------------------
+
+    @staticmethod
+    def _compute_volatility_score(info: dict) -> float:
+        """Score an ETF by real-time volatility metrics (higher = more active).
+
+        Used as the fallback / tiebreaker component in the composite score.
+        """
+        amplitude = info.get("amplitude", 0) or 0
+        turnover = info.get("turnover_rate", 0) or 0
+        volume = info.get("volume", 0) or 0
+        return round(amplitude * 40 + turnover * 30 + min(volume / 100_000_000, 1) * 30, 2)
+
+    @staticmethod
+    def _simulate_trades_from_signals(sig_df: pd.DataFrame) -> list[dict]:
+        """Walk a signal DataFrame and pair buy→sell into completed trades.
+
+        Does NOT involve broker commissions or risk checks — this is a
+        lightweight signal-level simulation for scoring purposes.
+
+        Returns:
+            List of trade dicts with keys:
+            pnl_pct, winning, holding_days, entry_date, exit_date,
+            entry_price, exit_price.
+        """
+        df = sig_df.sort_values("date", ascending=True).reset_index(drop=True)
+        trades: list[dict] = []
+        open_entry: dict | None = None
+
+        for i in range(len(df)):
+            row = df.iloc[i]
+            action = row.get("signal", "hold")
+            price = row.get("signal_price", row["close"])
+            date = row["date"]
+
+            if action == "buy" and open_entry is None:
+                open_entry = {"entry_date": date, "entry_price": float(price)}
+            elif action == "sell" and open_entry is not None:
+                exit_price = float(price)
+                pnl_pct = (exit_price - open_entry["entry_price"]) / open_entry["entry_price"]
+                holding_days = max((date - open_entry["entry_date"]).days, 1)
+                trades.append({
+                    "pnl_pct": round(pnl_pct, 6),
+                    "winning": pnl_pct > 0,
+                    "holding_days": holding_days,
+                    "entry_date": open_entry["entry_date"],
+                    "exit_date": date,
+                    "entry_price": open_entry["entry_price"],
+                    "exit_price": exit_price,
+                })
+                open_entry = None
+
+        # Close any unclosed position at the final bar
+        if open_entry is not None:
+            final_row = df.iloc[-1]
+            final_price = float(final_row["close"])
+            pnl_pct = (final_price - open_entry["entry_price"]) / open_entry["entry_price"]
+            holding_days = max((final_row["date"] - open_entry["entry_date"]).days, 1)
+            trades.append({
+                "pnl_pct": round(pnl_pct, 6),
+                "winning": pnl_pct > 0,
+                "holding_days": holding_days,
+                "entry_date": open_entry["entry_date"],
+                "exit_date": final_row["date"],
+                "entry_price": open_entry["entry_price"],
+                "exit_price": final_price,
+            })
+
+        return trades
+
+    @staticmethod
+    def _compute_backtest_score(trades: list[dict]) -> float:
+        """Convert a list of simulated trades into a single numeric score.
+
+        Formula:
+            score = total_return_pct * 50 + win_rate_pct * 0.3 + trade_freq_bonus
+        All-losing trades are penalised by 0.1x.  No trades → 0.
+        """
+        if not trades:
+            return 0.0
+
+        total_return_pct = sum(t["pnl_pct"] for t in trades)
+        win_count = sum(1 for t in trades if t["winning"])
+        win_rate = win_count / len(trades)
+        trade_count = len(trades)
+
+        score = (
+            (total_return_pct * 100) * 0.5
+            + (win_rate * 100) * 0.3
+            + min(trade_count, 5) / 5.0 * 20
+        )
+
+        # All-losing penalty
+        if win_rate == 0.0 and total_return_pct < 0:
+            score *= 0.1
+
+        return round(score, 2)
+
+    @staticmethod
+    def _run_mini_backtest(
+        code: str,
+        hist_cache: dict[str, pd.DataFrame | None],
+    ) -> tuple[float, list[dict]]:
+        """Fetch history, generate signals, simulate trades, return score.
+
+        Args:
+            code: ETF code (e.g. "510300").
+            hist_cache: Shared cache dict keyed by code.  A value of None
+                        means a previous fetch failed for this code.
+
+        Returns:
+            (backtest_score, trades_list).
+        """
+        # Check cache — None means a fetch failure
+        cached = hist_cache.get(code)
+        if cached is None and code in hist_cache:
+            return 0.0, []
+
+        if code not in hist_cache:
+            from src.data.fetcher import fetch_etf_hist
+
+            try:
+                hist_cache[code] = fetch_etf_hist(code)
+            except Exception:
+                hist_cache[code] = None
+                return 0.0, []
+
+        hist_df = hist_cache[code]
+        if hist_df is None or hist_df.empty:
+            return 0.0, []
+
+        strategy = ShortTermBandStrategy()
+        sig_df = strategy.generate_signals(hist_df)
+        trades = ShortTermBandStrategy._simulate_trades_from_signals(sig_df)
+        score = ShortTermBandStrategy._compute_backtest_score(trades)
+
+        return score, trades
+
+    # -- Main selector ----------------------------------------------------
 
     @staticmethod
     def select_best_etf(
@@ -538,27 +679,49 @@ class ShortTermBandStrategy(BaseStrategy):
     ) -> dict | None:
         """Select the best ETF for short-term band trading.
 
-        Ranks candidates by recent volatility (amplitude) × volume,
-        filtered by affordability (100 shares ≤ available cash).
+        Scores each candidate on two dimensions and blends them 70/30:
 
-        This is designed to be called from a headless script (weekly cron)
-        or from the Streamlit UI when the user clicks "选最优标的".
+        1. **Mini-backtest (70%)** — runs generate_signals on ~90 days of
+           history, simulates trades, and scores by return + win rate.
+        2. **Volatility (30%)** — real-time amplitude × turnover × volume.
+           Acts as a tiebreaker and the sole fallback when history is unavailable.
 
         Args:
             candidates: Optional override list. Uses CANDIDATE_ETFS if None.
-            max_price: Max share price that fits in a 2000-yuan account
-                       (100 shares × price ≤ 2000 → price ≤ 20).
+            max_price: Max share price (100 shares × price ≤ ~2000 yuan).
 
         Returns:
             The best candidate dict, or None if no suitable ETF found.
         """
-        from src.data.fetcher import fetch_etf_info
+        from src.data.fetcher import fetch_etf_info, fetch_etf_hist
 
         pool = candidates if candidates is not None else list(CANDIDATE_ETFS)
+
+        # ------------------------------------------------------------------
+        # Phase 1 — parallel historical data fetch (bottleneck, 5 workers)
+        # ------------------------------------------------------------------
+        hist_cache: dict[str, pd.DataFrame | None] = {}
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_map = {
+                executor.submit(fetch_etf_hist, etf["code"]): etf["code"]
+                for etf in pool
+            }
+            for future in as_completed(future_map):
+                code = future_map[future]
+                try:
+                    hist_cache[code] = future.result()
+                except Exception:
+                    hist_cache[code] = None
+
+        # ------------------------------------------------------------------
+        # Phase 2 — score each candidate
+        # ------------------------------------------------------------------
         scored: list[dict] = []
 
         for etf in pool:
             code = etf["code"]
+
+            # Real-time quote (required)
             try:
                 info = fetch_etf_info(code)
             except Exception:
@@ -568,25 +731,35 @@ class ShortTermBandStrategy(BaseStrategy):
             if current_price is None or current_price <= 0:
                 continue
 
-            # Affordability: 100 shares must fit in ~2000 yuan
             if current_price > max_price:
                 continue
 
-            # Score: prefer high volume + high volatility
-            volume = info.get("volume", 0) or 0
-            amplitude = info.get("amplitude", 0) or 0  # 振幅
-            turnover = info.get("turnover_rate", 0) or 0  # 换手率
+            vol_score = ShortTermBandStrategy._compute_volatility_score(info)
 
-            # Normalize and score (higher = better for band trading)
-            score = (amplitude * 40 + turnover * 30 + min(volume / 100_000_000, 1) * 30)
+            # Mini-backtest
+            try:
+                bt_score, trades = ShortTermBandStrategy._run_mini_backtest(code, hist_cache)
+                final_score = bt_score * 0.7 + vol_score * 0.3
+            except Exception:
+                bt_score = 0.0
+                trades = []
+                final_score = vol_score * 0.85  # slight penalty for backtest failure
+
+            total_return_pct = sum(t["pnl_pct"] for t in trades) if trades else 0.0
+            win_count = sum(1 for t in trades if t["winning"]) if trades else 0
 
             scored.append({
                 **etf,
                 "current_price": current_price,
-                "amplitude": amplitude,
-                "volume": volume,
-                "turnover_rate": turnover,
-                "score": round(score, 2),
+                "amplitude": info.get("amplitude", 0) or 0,
+                "volume": info.get("volume", 0) or 0,
+                "turnover_rate": info.get("turnover_rate", 0) or 0,
+                "score": round(final_score, 2),
+                "volatility_score": vol_score,
+                "backtest_score": bt_score,
+                "trade_count": len(trades),
+                "total_return_pct": round(total_return_pct, 4),
+                "win_rate": round(win_count / len(trades), 3) if trades else 0.0,
                 "name_from_api": info.get("name", etf["name"]),
             })
 

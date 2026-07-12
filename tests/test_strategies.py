@@ -8,6 +8,7 @@ from src.strategy.grid_trading import GridTradingStrategy
 from src.strategy.value_averaging import ValueAveragingStrategy
 from src.strategy.hybrid import HybridStrategy
 from src.strategy.four_percent_dca import FourPercentDCAStrategy
+from src.strategy.short_term_band import ShortTermBandStrategy
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +437,7 @@ ALL_STRATEGIES = [
     ValueAveragingStrategy(),
     HybridStrategy(),
     FourPercentDCAStrategy(),
+    ShortTermBandStrategy(),
 ]
 
 # Minimal info dict for live signal tests
@@ -555,3 +557,166 @@ class TestAllStrategies:
         assert isinstance(result, pd.DataFrame)
         for col in ["signal", "signal_price", "signal_shares", "signal_reason"]:
             assert col in result.columns
+
+
+# ---------------------------------------------------------------------------
+# ShortTermBandStrategy — ETF selection helpers
+# ---------------------------------------------------------------------------
+
+class TestSimulateTrades:
+    """Tests for _simulate_trades_from_signals."""
+
+    @staticmethod
+    def _make_sig_df(signals, prices, dates=None):
+        """Build a minimal signal DataFrame.
+
+        Args:
+            signals: list of ("buy"|"sell"|"hold") per row.
+            prices: list of close/signal_price per row.
+            dates: optional list of date strings.
+        """
+        n = len(signals)
+        if dates is None:
+            dates = pd.date_range("2026-07-01", periods=n, freq="B")
+        return pd.DataFrame({
+            "date": dates,
+            "close": prices,
+            "signal": signals,
+            "signal_price": prices,
+        })
+
+    def test_basic_buy_sell_pair(self):
+        """One buy→sell round trip with positive PnL."""
+        df = self._make_sig_df(
+            signals=["hold", "buy", "hold", "sell", "hold"],
+            prices=[10.0, 10.2, 10.5, 10.8, 10.6],
+        )
+        trades = ShortTermBandStrategy._simulate_trades_from_signals(df)
+        assert len(trades) == 1
+        expected = round((10.8 - 10.2) / 10.2, 6)
+        assert trades[0]["pnl_pct"] == expected
+        assert trades[0]["winning"] is True
+        assert trades[0]["holding_days"] >= 1
+
+    def test_basic_losing_trade(self):
+        """Buy then sell at a loss."""
+        df = self._make_sig_df(
+            signals=["buy", "hold", "sell"],
+            prices=[10.0, 9.5, 9.3],
+        )
+        trades = ShortTermBandStrategy._simulate_trades_from_signals(df)
+        assert len(trades) == 1
+        assert trades[0]["pnl_pct"] == pytest.approx((9.3 - 10.0) / 10.0)
+        assert trades[0]["winning"] is False
+
+    def test_unclosed_position_forces_close(self):
+        """Buy without a sell → closed at final close price."""
+        df = self._make_sig_df(
+            signals=["hold", "buy", "hold", "hold"],
+            prices=[10.0, 10.2, 10.5, 11.0],
+        )
+        trades = ShortTermBandStrategy._simulate_trades_from_signals(df)
+        assert len(trades) == 1
+        expected = round((11.0 - 10.2) / 10.2, 6)
+        assert trades[0]["exit_price"] == 11.0
+        assert trades[0]["pnl_pct"] == expected
+
+    def test_no_signals_returns_empty(self):
+        """All holds → empty list."""
+        df = self._make_sig_df(
+            signals=["hold"] * 10,
+            prices=[10.0] * 10,
+        )
+        trades = ShortTermBandStrategy._simulate_trades_from_signals(df)
+        assert trades == []
+
+    def test_multiple_round_trips(self):
+        """Two complete buy→sell cycles."""
+        df = self._make_sig_df(
+            signals=["buy", "sell", "buy", "hold", "sell"],
+            prices=[10.0, 10.5, 11.0, 10.8, 11.3],
+        )
+        trades = ShortTermBandStrategy._simulate_trades_from_signals(df)
+        assert len(trades) == 2
+        assert trades[0]["pnl_pct"] == round((10.5 - 10.0) / 10.0, 6)
+        assert trades[1]["pnl_pct"] == round((11.3 - 11.0) / 11.0, 6)
+
+    def test_consecutive_buys_ignored(self):
+        """Second buy before a sell is ignored (defensive)."""
+        df = self._make_sig_df(
+            signals=["buy", "buy", "sell"],
+            prices=[10.0, 10.3, 10.8],
+        )
+        trades = ShortTermBandStrategy._simulate_trades_from_signals(df)
+        assert len(trades) == 1
+        assert trades[0]["entry_price"] == 10.0  # first buy
+
+
+class TestBacktestScore:
+    """Tests for _compute_backtest_score."""
+
+    def test_profitable(self):
+        """Positive return, mixed win rate."""
+        trades = [
+            {"pnl_pct": 0.05, "winning": True},
+            {"pnl_pct": -0.02, "winning": False},
+            {"pnl_pct": 0.03, "winning": True},
+        ]
+        score = ShortTermBandStrategy._compute_backtest_score(trades)
+        # total_return = 0.06, win_rate=2/3≈0.667, trades=3
+        expected = (0.06 * 100) * 0.5 + (2 / 3 * 100) * 0.3 + min(3, 5) / 5.0 * 20
+        assert score == pytest.approx(expected, 0.01)
+
+    def test_all_losing_penalty(self):
+        """Every trade lost money → ×0.1 penalty applied."""
+        trades = [
+            {"pnl_pct": -0.03, "winning": False},
+            {"pnl_pct": -0.01, "winning": False},
+        ]
+        score = ShortTermBandStrategy._compute_backtest_score(trades)
+        total_return = -0.04
+        raw = (total_return * 100) * 0.5 + 0 * 0.3 + min(2, 5) / 5.0 * 20
+        assert score == pytest.approx(raw * 0.1, 0.01)
+        # Raw would be 6.0 (frequency bonus outweighs loss), penalised to 0.6
+
+    def test_empty_trades(self):
+        """No trades → 0."""
+        assert ShortTermBandStrategy._compute_backtest_score([]) == 0.0
+
+    def test_caps_trade_frequency_bonus(self):
+        """Trade count bonus caps at 5, but total return still differs."""
+        # Same total return (0.05), same win rate (100%), different trade count
+        trades_5 = [{"pnl_pct": 0.01, "winning": True}] * 5   # total: 5%
+        trades_10 = [{"pnl_pct": 0.005, "winning": True}] * 10  # total: 5%
+        s5 = ShortTermBandStrategy._compute_backtest_score(trades_5)
+        s10 = ShortTermBandStrategy._compute_backtest_score(trades_10)
+        # Scores are equal when total return and win rate are equal
+        # (frequency bonus caps at 5 for both)
+        assert s5 == pytest.approx(s10, 0.01)
+
+
+class TestVolatilityScore:
+    """Tests for _compute_volatility_score."""
+
+    def test_formula(self):
+        info = {"amplitude": 3.0, "turnover_rate": 2.0, "volume": 200_000_000}
+        score = ShortTermBandStrategy._compute_volatility_score(info)
+        expected = 3.0 * 40 + 2.0 * 30 + min(200_000_000 / 100_000_000, 1) * 30
+        assert score == pytest.approx(expected)
+
+    def test_missing_fields_default_zero(self):
+        info: dict = {}
+        score = ShortTermBandStrategy._compute_volatility_score(info)
+        assert score == 0.0
+
+    def test_volume_capped(self):
+        """Volume above 1e8 is capped to 1 for scoring."""
+        info_low = {"amplitude": 1.0, "turnover_rate": 1.0, "volume": 50_000_000}
+        info_high = {"amplitude": 1.0, "turnover_rate": 1.0, "volume": 500_000_000}
+        s_low = ShortTermBandStrategy._compute_volatility_score(info_low)
+        s_high = ShortTermBandStrategy._compute_volatility_score(info_high)
+        assert s_low < s_high
+        # Volume beyond 1e8 adds nothing
+        info_super = {"amplitude": 1.0, "turnover_rate": 1.0, "volume": 999_000_000}
+        s_super = ShortTermBandStrategy._compute_volatility_score(info_super)
+        assert s_high == pytest.approx(s_super)
