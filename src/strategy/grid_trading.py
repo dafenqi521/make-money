@@ -34,15 +34,15 @@ class GridTradingStrategy(BaseStrategy):
         return (
             "将历史价格范围等分为N档，价穿上档卖出、价穿下档买入，"
             "在震荡市中反复收割波动。上涨市中容易卖飞，下跌市中容易"
-            "满仓套牢。年化预期 7%-12%。"
+            "满仓套牢。5档激进配置，适合小资金波段操作。"
         )
 
     def get_default_params(self) -> dict:
         return {
-            "grid_count": 10,
+            "grid_count": 5,
             "upper_padding_pct": 0.05,
             "lower_padding_pct": 0.05,
-            "position_per_grid_pct": 0.08,
+            "position_per_grid_pct": 0.20,
             "base_price_source": "close",
         }
 
@@ -69,8 +69,8 @@ class GridTradingStrategy(BaseStrategy):
             "position_per_grid_pct": {
                 "label": "每档仓位",
                 "type": "slider",
-                "min": 0.02, "max": 0.20, "step": 0.01,
-                "help": "每档网格使用的资金比例（占总资产）",
+                "min": 0.05, "max": 0.30, "step": 0.05,
+                "help": "每档网格使用的资金比例（占总资产）。2000元建议20%=400元/档",
             },
             "base_price_source": {
                 "label": "基准价",

@@ -83,10 +83,13 @@ with st.sidebar:
 
     # 2. Strategy selector — ALWAYS FIRST
     strategy_names = registry.get_names()
-    # Default to 4%定投法 if available, else index 0
-    default_idx = (
-        strategy_names.index("4%定投法") if "4%定投法" in strategy_names else 0
-    )
+    # Default to 短线波段 if available, else 4%定投法, else index 0
+    default_idx = 0
+    preferred = ["短线波段", "4%定投法"]
+    for p in preferred:
+        if p in strategy_names:
+            default_idx = strategy_names.index(p)
+            break
     selected_name = st.selectbox(
         "🔄 当前策略",
         strategy_names,
@@ -104,16 +107,55 @@ with st.sidebar:
                      key="sidebar_screener_btn"):
             st.session_state["run_screener"] = True
 
-    # 4. ETF code (may be auto-filled by screener)
-    # Check if screener selected a code
+    # 4. ETF code — auto-select for band strategy, manual for others
     screener_code = st.session_state.get("screener_selected_code", "")
-    default_code = screener_code if screener_code else "510300"
-    symbol = st.text_input(
-        "ETF 代码",
-        value=default_code,
-        placeholder="输入代码，如 510300",
-        key="etf_code_input",
-    ).strip()
+
+    if strategy.name == "短线波段":
+        # Auto-select best ETF for short-term band trading
+        st.caption(f"🔍 短线波段 · 自动选标的")
+
+        # Re-select ETF weekly or when user clicks
+        if st.button("🔄 重新扫描最优标的", type="secondary", use_container_width=True,
+                     key="band_rescan_btn"):
+            st.session_state.pop("band_selected_etf", None)
+            st.session_state.pop("band_selected_info", None)
+
+        selected_etf = st.session_state.get("band_selected_etf")
+        selected_info = st.session_state.get("band_selected_info")
+
+        if selected_etf is None:
+            with st.spinner("正在扫描10只候选ETF..."):
+                from src.strategy.short_term_band import ShortTermBandStrategy
+                best = ShortTermBandStrategy.select_best_etf()
+                if best:
+                    selected_etf = best["code"]
+                    selected_info = best
+                    st.session_state["band_selected_etf"] = selected_etf
+                    st.session_state["band_selected_info"] = selected_info
+                else:
+                    selected_etf = "510300"
+                    selected_info = {"code": "510300", "name": "沪深300ETF", "current_price": None}
+
+        # Show selected ETF
+        if selected_info:
+            price_str = f"¥{selected_info.get('current_price', '?'):.3f}" if selected_info.get("current_price") else "?"
+            amp_str = f"{selected_info.get('amplitude', 0):.1f}%" if selected_info.get("amplitude") else "?"
+            st.info(
+                f"📌 **{selected_info.get('code')} {selected_info.get('name_from_api', selected_info.get('name', ''))}**\n\n"
+                f"当前价：{price_str} | 振幅：{amp_str} | 评分：{selected_info.get('score', '?')}"
+            )
+
+        symbol = selected_etf
+        # Store in session for the main area
+        st.session_state["band_current_code"] = symbol
+    else:
+        default_code = screener_code if screener_code else "510300"
+        symbol = st.text_input(
+            "ETF 代码",
+            value=default_code,
+            placeholder="输入代码，如 510300",
+            key="etf_code_input",
+        ).strip()
 
     # 5. Date range
     date_range = st.selectbox(
