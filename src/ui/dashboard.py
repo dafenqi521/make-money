@@ -358,7 +358,7 @@ def render_data_table(df: pd.DataFrame) -> None:
         if col in display_df.columns:
             column_config[col] = st.column_config.NumberColumn(col, format="%.3f", width="small")
 
-    # Row styles — use applymap (pandas 2.0 compatible)
+    # Row styles — use map (pandas 2.0 compatible)
     def _style_change(val):
         if val is None or pd.isna(val): return ""
         if val > 0:
@@ -373,9 +373,9 @@ def render_data_table(df: pd.DataFrame) -> None:
 
     styled = display_df.style
     if "涨跌幅" in display_df.columns:
-        styled = styled.applymap(_style_change, subset=["涨跌幅"])
+        styled = styled.map(_style_change, subset=["涨跌幅"])
     if "收盘" in display_df.columns:
-        styled = styled.applymap(_style_close, subset=["收盘"])
+        styled = styled.map(_style_close, subset=["收盘"])
 
     st.dataframe(
         styled, use_container_width=True, hide_index=True,
