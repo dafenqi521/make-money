@@ -133,9 +133,7 @@ with st.sidebar:
     with st.expander(f"📖 {strategy.name} — 策略说明", expanded=False):
         st.write(strategy.description)
 
-    # 6. Dynamic parameter form
-    st.markdown("### ⚙️ 参数配置")
-
+    # 6. Dynamic parameter form — collapsed, defaults just work
     # Apply optimized params if user clicked "apply"
     if st.session_state.pop("optimizer_applied", False):
         best_params = st.session_state.get("optimizer_best_params", {})
@@ -149,7 +147,9 @@ with st.sidebar:
             else:
                 st.session_state[widget_key] = val
 
-    params = _render_param_form(strategy, prefix="live")
+    with st.expander("⚙️ 参数配置（可选，默认已优化）", expanded=False):
+        st.caption("不改也能直接用。想调的话，改完点「开始回测」看效果。")
+        params = _render_param_form(strategy, prefix="live")
 
     # 7. Backtest button
     st.divider()

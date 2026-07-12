@@ -19,34 +19,20 @@ from src.ui.terminal_theme import (
 # ---------------------------------------------------------------------------
 
 def _render_param_form(strategy, prefix: str = "") -> dict:
-    """Render strategy parameters.
-
-    Defaults are pre-optimised — most users don't need to change them.
-    Advanced tweaking is hidden behind a collapsed expander so the sidebar
-    stays clean for first-time users.
-    """
+    """Render all strategy parameters flat (caller is responsible for grouping)."""
     descs = strategy.get_param_descriptions()
     defaults = strategy.get_default_params()
-
-    # ── Quick-access: the two params users actually change ──
     values: dict = {}
-    quick_keys = ["total_portions", "portion_amount"]
-
-    for key in quick_keys:
-        if key not in defaults:
-            continue
+    for key, default in defaults.items():
         desc = descs.get(key, {})
         label = desc.get("label", key)
         help_text = desc.get("help", "")
         param_type = desc.get("type", "number")
         widget_key = f"{prefix}_{key}"
-        default = defaults[key]
         if param_type == "select":
             options = desc.get("options", [str(default)])
             idx = options.index(str(default)) if str(default) in options else 0
-            values[key] = st.selectbox(
-                label, options, index=idx, key=widget_key, help=help_text,
-            )
+            values[key] = st.selectbox(label, options, index=idx, key=widget_key, help=help_text)
         elif param_type == "slider":
             values[key] = st.slider(
                 label, min_value=float(desc.get("min", 0)),
@@ -59,42 +45,6 @@ def _render_param_form(strategy, prefix: str = "") -> dict:
                 min_value=float(desc.get("min", 0)), max_value=float(desc.get("max", 1e9)),
                 step=float(desc.get("step", 1)), key=widget_key, help=help_text,
             )
-
-    # ── Advanced params: collapsed by default ──
-    remaining = {k: v for k, v in defaults.items() if k not in quick_keys}
-    if remaining:
-        with st.expander("⚙️ 高级参数（一般不用改）", expanded=False):
-            st.caption("以下参数已预设最优值，改之前建议先跑一次回测看看效果。")
-            for key, default in remaining.items():
-                desc = descs.get(key, {})
-                label = desc.get("label", key)
-                help_text = desc.get("help", "")
-                param_type = desc.get("type", "number")
-                widget_key = f"{prefix}_{key}"
-                if param_type == "select":
-                    options = desc.get("options", [str(default)])
-                    idx = options.index(str(default)) if str(default) in options else 0
-                    values[key] = st.selectbox(
-                        label, options, index=idx, key=widget_key, help=help_text,
-                    )
-                elif param_type == "slider":
-                    values[key] = st.slider(
-                        label, min_value=float(desc.get("min", 0)),
-                        max_value=float(desc.get("max", 100)), value=float(default),
-                        step=float(desc.get("step", 1)), key=widget_key, help=help_text,
-                    )
-                else:
-                    values[key] = st.number_input(
-                        label, value=float(default) if isinstance(default, (int, float)) else default,
-                        min_value=float(desc.get("min", 0)), max_value=float(desc.get("max", 1e9)),
-                        step=float(desc.get("step", 1)), key=widget_key, help=help_text,
-                    )
-
-    # Ensure every default key has a value (safety net)
-    for key in defaults:
-        if key not in values:
-            values[key] = defaults[key]
-
     return values
 
 
