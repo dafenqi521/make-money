@@ -231,7 +231,7 @@ class FastBand4PctStrategy(BaseStrategy):
         if idx >= decline_days:
             prev_close = float(df_sorted.iloc[idx - decline_days]["close"])
             if prev_close > 0:
-                decline_pct = (prev_close - close) / prev_close
+                decline_pct = (prev_close - close) / prev_close  # positive = down, negative = up
                 if decline_pct >= 0.05:
                     decline_score = 4.0
                 elif decline_pct >= 0.04:
@@ -242,9 +242,15 @@ class FastBand4PctStrategy(BaseStrategy):
                     decline_score = 2.0
                 elif decline_pct >= 0.01:
                     decline_score = 1.0
-                details.append(f"近{decline_days}日跌{decline_pct:.1%} → +{decline_score:.1f}")
-        if not details or decline_score == 0:
-            details.append("近N日跌幅不足 → +0")
+                # Format: show direction clearly
+                if decline_pct > 0:
+                    details.append(f"近{decline_days}日跌{decline_pct:.1%} → +{decline_score:.1f}")
+                elif decline_pct < -0.005:
+                    details.append(f"近{decline_days}日涨{abs(decline_pct):.1%}（逆势上涨，不加分） → +0")
+                else:
+                    details.append(f"近{decline_days}日持平 → +0")
+        if not details:
+            details.append("近N日跌幅 数据不足 → +0")
 
         # ── Factor 2: K-line reversal (0-2) ──
         reversal_score = 0
