@@ -96,6 +96,7 @@ def _auto_register(reg: StrategyRegistry) -> None:
     from src.strategy.hybrid import HybridStrategy
     from src.strategy.four_percent_dca import FourPercentDCAStrategy
     from src.strategy.short_term_band import ShortTermBandStrategy
+    from src.strategy.fast_band_4pct import FastBand4PctStrategy
 
     reg.register(TrendFollowingStrategy())
     reg.register(GridTradingStrategy())
@@ -103,3 +104,4 @@ def _auto_register(reg: StrategyRegistry) -> None:
     reg.register(HybridStrategy())
     reg.register(FourPercentDCAStrategy())
     reg.register(ShortTermBandStrategy())
+    reg.register(FastBand4PctStrategy())
