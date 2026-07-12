@@ -43,6 +43,7 @@ from src.ui.terminal_theme import (
     SUCCESS,
     DANGER,
     FONT,
+    BORDER,
 )
 
 # ── Page config ──────────────────────────────────────────────────
@@ -85,7 +86,7 @@ with st.sidebar:
     strategy_names = registry.get_names()
     # Default to 短线波段 if available, else 4%定投法, else index 0
     default_idx = 0
-    preferred = ["短线波段", "4%定投法"]
+    preferred = ["4%定投法", "短线波段"]
     for p in preferred:
         if p in strategy_names:
             default_idx = strategy_names.index(p)
@@ -172,6 +173,31 @@ with st.sidebar:
             symbol = selected_etf if selected_etf else "510300"
 
         st.session_state["band_current_code"] = symbol
+    elif strategy.name == "4%定投法":
+        st.caption("🎯 4%定投法 · 智能选基")
+
+        if st.button("🔄 重新扫描", type="secondary", use_container_width=True,
+                     key="dca_scan_btn"):
+            st.session_state.pop("dca_top3", None)
+            st.session_state.pop("dca_selected_symbol", None)
+            st.session_state.pop("dca_selected_name", None)
+
+        # Show current pick compactly
+        current_pick = st.session_state.get("dca_selected_symbol", "")
+        if current_pick:
+            pick_name = st.session_state.get("dca_selected_name", "")
+            st.success(f"✅ {current_pick} {pick_name}")
+        else:
+            st.info("👇 主区域选一只")
+
+        # Manual input fallback
+        manual = st.text_input(
+            "或手动输入代码",
+            value=current_pick if current_pick else "",
+            placeholder="如 510300",
+            key="dca_manual_input",
+        ).strip()
+        symbol = manual if manual else current_pick if current_pick else ""
     else:
         default_code = screener_code if screener_code else "510300"
         symbol = st.text_input(
@@ -246,6 +272,97 @@ if run_screener or (not symbol and st.session_state.get("screener_results") is N
         st.rerun()
 
 # ── ETF Dashboard section ────────────────────────────────────────
+
+# --- 4% DCA: show Top 3 ranking when no ETF selected ---
+if strategy.name == "4%定投法" and (not symbol or len(symbol) != 6):
+    st.header("🎯 4%定投法 · 为你筛选 Top 3 定投标的")
+
+    # Ensure scan has run
+    if st.session_state.get("dca_top3") is None:
+        with st.spinner("正在扫描 25 只宽基 ETF（PE估值+近期走势）..."):
+            from src.strategy.four_percent_dca import select_top_dca_etfs
+            st.session_state["dca_top3"] = select_top_dca_etfs(3)
+
+    top3 = st.session_state.get("dca_top3", [])
+
+    if top3:
+        st.caption("按 PE低估（50%）+ 近期跌幅（30%）+ 宽基加分（20%）排名，点击一只开始分析")
+
+        for i, etf in enumerate(top3):
+            medal = ["🥇", "🥈", "🥉"][i]
+
+            # PE status
+            pe_pct = etf.get("pe_percentile")
+            if pe_pct is not None:
+                if pe_pct < 30:
+                    pe_badge = f"🟢 PE分位 {pe_pct:.0f}% 低估"
+                elif pe_pct < 70:
+                    pe_badge = f"🟡 PE分位 {pe_pct:.0f}% 合理"
+                else:
+                    pe_badge = f"🔴 PE分位 {pe_pct:.0f}% 高估"
+            else:
+                pe_badge = "⚪ PE无数据"
+
+            ret = etf.get("recent_return_pct", 0)
+            if ret < -2:
+                trend_badge = f"📉 近5日 {ret:+.1f}%（定投良机）"
+            elif ret < 0:
+                trend_badge = f"📉 近5日 {ret:+.1f}%"
+            elif ret > 2:
+                trend_badge = f"📈 近5日 {ret:+.1f}%（等回调）"
+            else:
+                trend_badge = f"➡️ 近5日 {ret:+.1f}%"
+
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([1.5, 2, 2, 1.5])
+
+                with c1:
+                    st.markdown(f"## {medal}")
+                    st.metric("评分", f"{etf['score']:.0f}/100")
+
+                with c2:
+                    st.markdown(f"**{etf['code']}** {etf['name']}")
+                    st.caption(f"💰 ¥{etf['current_price']:.3f}")
+                    st.caption(pe_badge)
+
+                with c3:
+                    st.caption(trend_badge)
+                    st.caption(etf["reason"])
+
+                    # Score breakdown
+                    pe_s = etf.get("pe_score", 0)
+                    dec_s = etf.get("decline_score", 0)
+                    bonus = etf.get("type_bonus", 0)
+                    st.caption(f"PE{pe_s:.0f} + 跌幅{dec_s:.0f} + 宽基{bonus:.0f}")
+
+                with c4:
+                    if st.button(f"📊 查看 {etf['code']}", key=f"dca_analyze_{i}",
+                                 type="primary", use_container_width=True):
+                        st.session_state["dca_selected_symbol"] = etf["code"]
+                        st.session_state["dca_selected_name"] = etf["name"]
+                        st.rerun()
+    else:
+        st.warning("扫描失败，请在下方手动输入 ETF 代码")
+
+    # --- Custom ETF input (below Top 3) ---
+    st.divider()
+    with st.expander("🔍 或者自己输入任意 ETF 代码", expanded=False):
+        custom = st.text_input(
+            "输入 6 位代码",
+            placeholder="如 510880（中证红利）",
+            key="dca_custom_input",
+        ).strip()
+        if custom and len(custom) == 6 and custom.isdigit():
+            if st.button("📊 分析这个 ETF", key="dca_custom_go", type="primary",
+                         use_container_width=True):
+                st.session_state["dca_selected_symbol"] = custom
+                st.session_state["dca_selected_name"] = custom
+                st.rerun()
+        elif custom:
+            st.caption("代码应为 6 位数字")
+
+    st.stop()
+
 if not symbol:
     if st.session_state.get("screener_results") is not None:
         st.info("👆 从筛选结果中选择一只 ETF，或在左侧手动输入代码")

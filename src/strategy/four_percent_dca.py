@@ -1055,3 +1055,205 @@ def _compute_lot_aligned_shares(
 
     return 0
 
+
+# =============================================================================
+# ETF selection for 4% DCA — "宽基优先 + PE低估 + 最近在跌" scoring
+# =============================================================================
+
+# Candidate pool: ETFs with PE history available, classified by type.
+# Broad-market ETFs are preferred per the strategy philosophy.
+DCA_CANDIDATE_ETFS: list[dict] = [
+    # ═══════════════════════════════════════════════════════════════
+    # 国内宽基 ETF — 每个指数只保留流动性最好的那只（去重），共 25 只
+    # "broad"=纯宽基（+20加分）, "broad50"=策略宽基（+10加分）
+    # ═══════════════════════════════════════════════════════════════
+
+    # ── 大盘蓝筹 ──
+    {"code": "510300", "name": "沪深300ETF", "category": "broad"},
+    {"code": "510050", "name": "上证50ETF", "category": "broad"},
+    {"code": "510180", "name": "上证180ETF", "category": "broad"},
+    {"code": "159901", "name": "深证100ETF", "category": "broad"},
+
+    # ── 中盘 ──
+    {"code": "510500", "name": "中证500ETF", "category": "broad"},
+    {"code": "515800", "name": "中证800ETF", "category": "broad"},
+
+    # ── 小盘 ──
+    {"code": "512100", "name": "中证1000ETF", "category": "broad"},
+    {"code": "563300", "name": "中证2000ETF", "category": "broad"},
+    {"code": "159628", "name": "国证2000ETF", "category": "broad"},
+
+    # ── 新宽基（A50/A500）──
+    {"code": "159593", "name": "中证A50ETF", "category": "broad"},
+    {"code": "159338", "name": "中证A500ETF", "category": "broad"},
+    {"code": "560050", "name": "MSCI A50ETF", "category": "broad"},
+
+    # ── 创业板 ──
+    {"code": "159915", "name": "创业板ETF", "category": "broad"},
+    {"code": "159949", "name": "创业板50ETF", "category": "broad"},
+
+    # ── 科创板 ──
+    {"code": "588000", "name": "科创50ETF", "category": "broad"},
+    {"code": "588190", "name": "科创100ETF", "category": "broad"},
+
+    # ── 双创 ──
+    {"code": "159781", "name": "双创50ETF", "category": "broad"},
+
+    # ── 策略宽基（红利/低波/质量，+10加成）──
+    {"code": "510880", "name": "中证红利ETF", "category": "broad50"},
+    {"code": "515080", "name": "中证红利ETF(招商)", "category": "broad50"},
+    {"code": "512890", "name": "红利低波ETF", "category": "broad50"},
+    {"code": "515180", "name": "红利低波100ETF", "category": "broad50"},
+    {"code": "563020", "name": "红利低波ETF(易方达)", "category": "broad50"},
+    {"code": "515450", "name": "红利质量ETF", "category": "broad50"},
+    {"code": "159905", "name": "深红利ETF", "category": "broad50"},
+    {"code": "562060", "name": "中证A50增强ETF", "category": "broad50"},
+]
+
+
+def select_top_dca_etfs(n: int = 3, candidates: list[dict] | None = None) -> list[dict]:
+    """Select the top N ETFs for the 4% DCA strategy.
+
+    Scoring dimensions (aligned with the "1+1+4" framework):
+
+    1. **PE undervaluation (50%)** — lower PE percentile = cheaper = higher score.
+       Uses legulegu historical PE data. ETFs without PE data get 0 on this axis.
+    2. **Recent decline (30%)** — price has been falling recently, so the 4%
+       drop triggers are more likely to fire soon.
+    3. **Broad-market bonus (20%)** — wide indexes are more reliable for
+       mean-reversion; strategy/sector ETFs get less or no bonus.
+
+    Parallel fetches historical data for all candidates (ThreadPoolExecutor)
+    to keep total time under 8 seconds even with 50+ ETFs.
+
+    Returns:
+        List of up to *n* candidate dicts, sorted best-first.  Each dict has
+        keys: code, name, category, current_price, pe_percentile, pe_value,
+        recent_return_pct, score, reason.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from src.data.fetcher import fetch_etf_info, fetch_etf_hist
+    from src.data.pe_history import get_etf_pe_percentile
+
+    pool = candidates if candidates is not None else DCA_CANDIDATE_ETFS
+
+    # ── Phase 1: parallel fetch historical data (bottleneck) ──
+    hist_cache: dict[str, pd.DataFrame | None] = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_map = {
+            executor.submit(fetch_etf_hist, etf["code"]): etf["code"]
+            for etf in pool
+        }
+        for future in as_completed(future_map):
+            code = future_map[future]
+            try:
+                hist_cache[code] = future.result()
+            except Exception:
+                hist_cache[code] = None
+
+    # ── Phase 2: real-time quotes + scoring ──
+    scored: list[dict] = []
+
+    for etf in pool:
+        code = etf["code"]
+        category = etf.get("category", "sector")
+
+        # --- Real-time quote ---
+        try:
+            info = fetch_etf_info(code)
+        except Exception:
+            continue
+
+        current_price = info.get("current_price")
+        if current_price is None or current_price <= 0:
+            continue
+
+        pe_value = info.get("pe_ttm") or info.get("pe_static")
+
+        # --- PE percentile (the core metric for 4% DCA) ---
+        pe_pct = None
+        try:
+            pp = get_etf_pe_percentile(code, current_pe=pe_value)
+            if pp is not None and pp.pe_percentile is not None:
+                pe_pct = pp.pe_percentile
+        except Exception:
+            pass
+
+        # --- Recent price trend (5-day return) from cached hist ---
+        recent_return = 0.0
+        hist = hist_cache.get(code)
+        if hist is not None and not hist.empty and len(hist) >= 6:
+            try:
+                hist_sorted = hist.sort_values("date", ascending=True)
+                recent_return = float(
+                    (hist_sorted.iloc[-1]["close"] - hist_sorted.iloc[-6]["close"])
+                    / hist_sorted.iloc[-6]["close"]
+                )
+            except Exception:
+                pass
+
+        # --- Composite score ---
+        # (1) PE undervaluation — lower percentile = higher score
+        if pe_pct is not None:
+            pe_score = max(0, (100 - pe_pct) / 100) * 50
+        else:
+            pe_score = 0.0
+
+        # (2) Recent decline — falling price = closer to 4% buy trigger
+        decline_score = max(0, -recent_return * 100) * 0.3
+        decline_score = min(decline_score, 30)
+
+        # (3) Category bonus: broad=20, broad50(strategy-enhanced)=10, sector=0
+        if category == "broad":
+            type_bonus = 20
+        elif category == "broad50":
+            type_bonus = 10
+        else:
+            type_bonus = 0
+
+        total_score = round(pe_score + decline_score + type_bonus, 2)
+
+        # --- Build reason ---
+        reason_parts = []
+        if pe_pct is not None:
+            if pe_pct < 30:
+                reason_parts.append(f"PE分位{pe_pct:.0f}%（低估✅）")
+            elif pe_pct < 70:
+                reason_parts.append(f"PE分位{pe_pct:.0f}%（合理）")
+            else:
+                reason_parts.append(f"PE分位{pe_pct:.0f}%（高估⚠️）")
+        else:
+            reason_parts.append("PE无数据")
+
+        if recent_return < -0.02:
+            reason_parts.append(f"近5日跌{abs(recent_return):.1%}（定投良机）")
+        elif recent_return < 0:
+            reason_parts.append(f"近5日微跌{abs(recent_return):.1%}")
+        elif recent_return > 0.03:
+            reason_parts.append(f"近5日涨{recent_return:.1%}（等回调）")
+        else:
+            reason_parts.append("近期平稳")
+
+        if category == "broad":
+            reason_parts.append("宽基")
+        elif category == "broad50":
+            reason_parts.append("策略宽基")
+
+        scored.append({
+            "code": code,
+            "name": etf["name"],
+            "category": category,
+            "current_price": current_price,
+            "pe_percentile": pe_pct,
+            "pe_value": pe_value,
+            "recent_return_pct": round(recent_return * 100, 2),
+            "score": total_score,
+            "pe_score": round(pe_score, 1),
+            "decline_score": round(decline_score, 1),
+            "type_bonus": type_bonus,
+            "reason": " · ".join(reason_parts),
+        })
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:n]
+
