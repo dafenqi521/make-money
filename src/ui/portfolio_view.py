@@ -14,6 +14,7 @@ from src.strategy.signals import LiveSignal
 from src.ui.terminal_theme import (
     PRIMARY, SUCCESS, DANGER, WARNING, NEUTRAL, DARK,
     BG_CARD, BORDER, FONT, FONT_MONO,
+    _styler_apply,
 )
 
 
@@ -239,9 +240,9 @@ def render_portfolio_details(pm: PortfolioManager) -> None:
 
             styled = df.style
             if "盈亏%" in df.columns:
-                styled = styled.applymap(_pnl_color, subset=["盈亏%"])
+                styled = _styler_apply(styled, _pnl_color, ["盈亏%"])
             if "浮动盈亏" in df.columns:
-                styled = styled.applymap(_pnl_color, subset=["浮动盈亏"])
+                styled = _styler_apply(styled, _pnl_color, ["浮动盈亏"])
 
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:

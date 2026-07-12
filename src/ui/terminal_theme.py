@@ -193,6 +193,16 @@ def apply_chart_theme(fig: go.Figure, height: int = 500) -> None:
 # Helper
 # =========================================================================
 
+import pandas as pd
+
+
+def _styler_apply(styled: "pd.io.formats.style.Styler", func, subset: list[str]) -> "pd.io.formats.style.Styler":
+    """Apply func to Styler columns, using map (pandas>=2.1) or applymap (2.0)."""
+    if hasattr(styled, "map"):
+        return styled.map(func, subset=subset)
+    return styled.applymap(func, subset=subset)
+
+
 def section_header(label: str) -> None:
     st.markdown(
         f'<p style="font-family:{FONT}; font-size:0.75rem; color:{NEUTRAL}; '

@@ -16,6 +16,7 @@ from src.strategy.base import BaseStrategy
 from src.ui.terminal_theme import (
     PRIMARY, SUCCESS, DANGER, WARNING, NEUTRAL, DARK,
     BG_CARD, BORDER, FONT, FONT_MONO,
+    _styler_apply,
 )
 
 # ---------------------------------------------------------------------------
@@ -556,7 +557,7 @@ def _render_screener_table(df: pd.DataFrame) -> None:
                 return f"color: {WARNING}; font-weight: 600;"
             else:
                 return f"color: {NEUTRAL};"
-        styled = display_df.style.applymap(_score_color, subset=["评分"])
+        styled = _styler_apply(display_df.style, _score_color, ["评分"])
     else:
         styled = display_df.style
 

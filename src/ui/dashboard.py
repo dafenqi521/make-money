@@ -11,6 +11,7 @@ from src.ui.terminal_theme import (
     UP_COLOR, DOWN_COLOR, NEUTRAL, DARK, BORDER,
     MA_COLORS, FONT, apply_chart_theme,
     BG_CARD, PRIMARY, SUCCESS, DANGER,
+    _styler_apply,
 )
 
 
@@ -373,9 +374,9 @@ def render_data_table(df: pd.DataFrame) -> None:
 
     styled = display_df.style
     if "涨跌幅" in display_df.columns:
-        styled = styled.applymap(_style_change, subset=["涨跌幅"])
+        styled = _styler_apply(styled, _style_change, ["涨跌幅"])
     if "收盘" in display_df.columns:
-        styled = styled.applymap(_style_close, subset=["收盘"])
+        styled = _styler_apply(styled, _style_close, ["收盘"])
 
     st.dataframe(
         styled, use_container_width=True, hide_index=True,
