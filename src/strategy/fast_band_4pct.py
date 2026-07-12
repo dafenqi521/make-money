@@ -169,7 +169,7 @@ class FastBand4PctStrategy(BaseStrategy):
 
     def get_default_params(self) -> dict:
         return {
-            "entry_threshold": 5,
+            "entry_threshold": 4,
             "take_profit_pct": 0.025,
             "stop_loss_pct": 0.02,
             "max_hold_days": 3,
@@ -183,7 +183,7 @@ class FastBand4PctStrategy(BaseStrategy):
             "entry_threshold": {
                 "label": "入场门槛", "type": "slider",
                 "min": 3, "max": 8, "step": 1,
-                "help": "综合评分≥此值买入（默认5，越高越保守）",
+                "help": "综合评分≥此值买入（默认4，市场横盘也能触发）",
             },
             "take_profit_pct": {
                 "label": "止盈线", "type": "slider",
@@ -241,23 +241,29 @@ class FastBand4PctStrategy(BaseStrategy):
             prev_close = float(df_sorted.iloc[idx - decline_days]["close"])
             if prev_close > 0:
                 decline_pct = (prev_close - close) / prev_close  # positive = down, negative = up
-                if decline_pct >= 0.05:
+                if decline_pct >= 0.03:
                     decline_score = 4.0
-                elif decline_pct >= 0.04:
-                    decline_score = 3.5
-                elif decline_pct >= 0.03:
-                    decline_score = 3.0
                 elif decline_pct >= 0.02:
-                    decline_score = 2.0
+                    decline_score = 3.5
+                elif decline_pct >= 0.015:
+                    decline_score = 3.0
                 elif decline_pct >= 0.01:
-                    decline_score = 1.0
+                    decline_score = 2.5
+                elif decline_pct >= 0.005:
+                    decline_score = 2.0
+                elif decline_pct > 0.001:
+                    decline_score = 1.5
+                elif decline_pct > -0.005:
+                    decline_score = 1.0  # essentially flat, still some points
                 # Format: show direction clearly
-                if decline_pct > 0:
+                if decline_pct >= 0.005:
                     details.append(f"近{decline_days}日跌{decline_pct:.1%} → +{decline_score:.1f}")
-                elif decline_pct < -0.005:
-                    details.append(f"近{decline_days}日涨{abs(decline_pct):.1%}（逆势上涨，不加分） → +0")
+                elif decline_pct > 0:
+                    details.append(f"近{decline_days}日微跌{decline_pct:.2%} → +{decline_score:.1f}")
+                elif decline_pct >= -0.005:
+                    details.append(f"近{decline_days}日横盘{decline_pct:+.2%} → +{decline_score:.1f}")
                 else:
-                    details.append(f"近{decline_days}日持平 → +0")
+                    details.append(f"近{decline_days}日涨{abs(decline_pct):.1%}（逆势上涨，不加分） → +0")
         if not details:
             details.append("近N日跌幅 数据不足 → +0")
 
@@ -744,37 +750,41 @@ class FastBand4PctStrategy(BaseStrategy):
             pe_is_low = pe_pct is not None and pe_pct < 30
             pe_is_high = pe_pct is not None and pe_pct >= 70
 
-            if entry_raw >= 5 and pe_is_low:
+            if entry_raw >= 6 and pe_is_low:
                 action = "🔥 强烈买入"
                 action_color = "strong_buy"
                 action_detail = "低估+超跌反弹信号，最佳入场时机"
-            elif entry_raw >= 5 and not pe_is_high:
+            elif entry_raw >= 4 and pe_is_low:
                 action = "✅ 建议买入"
                 action_color = "buy"
-                action_detail = "反弹信号明确，可轻仓入场"
-            elif entry_raw >= 5 and pe_is_high:
+                action_detail = "低估区间+入场信号触发"
+            elif entry_raw >= 4 and not pe_is_high:
+                action = "✅ 可以买入"
+                action_color = "buy"
+                action_detail = "入场信号触发，可轻仓入场"
+            elif entry_raw >= 4 and pe_is_high:
                 action = "🟡 短线博弈"
                 action_color = "speculative"
                 action_detail = "反弹信号好但PE偏高，快进快出"
-            elif entry_raw >= 3 and pe_is_low:
+            elif entry_raw >= 2.5 and pe_is_low:
                 action = "⏳ 接近买点"
                 action_color = "watch"
-                action_detail = "低估但信号还不够强，再等1-2天"
-            elif entry_raw >= 3 and not pe_is_high:
+                action_detail = "低估区间，再等一个小回调"
+            elif entry_raw >= 2.5:
                 action = "⏳ 继续等待"
                 action_color = "wait"
-                action_detail = "估值合理但反弹信号不明显"
+                action_detail = "反弹信号还不够强"
             elif pe_is_low:
                 action = "👀 值得关注"
                 action_color = "track"
-                action_detail = "低估区但尚无反弹信号，持续跟踪"
+                action_detail = "低估区间，等待入场信号"
             elif pe_is_high:
                 action = "🔴 建议回避"
                 action_color = "avoid"
                 action_detail = "PE高估，不建议短线参与"
             else:
-                action = "❌ 暂不建议"
-                action_color = "skip"
+                action = "⏳ 暂时观望"
+                action_color = "wait"
                 action_detail = "估值合理但缺乏入场信号"
 
             scored.append({
