@@ -324,13 +324,13 @@ if run_screener or (not symbol and st.session_state.get("screener_results") is N
 
 # --- 4% Fast Band: show Top 5 ranking when no ETF selected ---
 if strategy.name == "4%快速波段" and (not symbol or len(symbol) != 6):
-    st.header("⚡ 4%快速波段 · Top 5 超跌反弹机会")
+    st.header("⚡ 4%快速波段 · 25只宽基全量排名")
 
     # Ensure scan has run
     if st.session_state.get("fastband_top5") is None:
-        with st.spinner("正在扫描25只宽基ETF（PE估值+技术面双维度打分）..."):
+        with st.spinner("正在扫描25只宽基ETF（入场时机+波动+流动性+PE安全边际）..."):
             from src.strategy.fast_band_4pct import FastBand4PctStrategy
-            st.session_state["fastband_top5"] = FastBand4PctStrategy.select_top_etfs(5)
+            st.session_state["fastband_top5"] = FastBand4PctStrategy.select_top_etfs(25)
 
     top5 = st.session_state.get("fastband_top5", [])
 
@@ -351,7 +351,7 @@ if strategy.name == "4%快速波段" and (not symbol or len(symbol) != 6):
         if summary_parts:
             st.info("  |  ".join(summary_parts))
 
-        st.caption("PE低估(25%) + 入场时机(35%) + 波动性(25%) + 流动性(15%)，点击一只开始分析")
+        st.caption("入场时机(50%) + 波动性(25%) + 流动性(15%) + PE安全边际(10%)，按综合分排列")
 
         for i, etf in enumerate(top5):
             action = etf.get("action", "?")
@@ -392,7 +392,7 @@ if strategy.name == "4%快速波段" and (not symbol or len(symbol) != 6):
                     st.caption(f"🎯 入场{entry_raw:.0f}/10  |  振幅{etf['amplitude']:.1f}%")
 
                 with c3:
-                    st.caption(f"📊 PE{etf['pe_score']:.0f} + 入场{entry_raw:.0f} + 波动{etf['volatility_score']:.0f} + 流动{etf['liquidity_score']:.0f}")
+                    st.caption(f"📊 入场{entry_raw:.0f} + 波动{etf['volatility_score']:.0f} + 流动{etf['liquidity_score']:.0f} + PE{etf['pe_score']:.0f}")
                     st.caption(f"💡 {action_detail}")
                     details = etf.get("score_details", [])
                     if details:

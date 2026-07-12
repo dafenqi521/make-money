@@ -147,8 +147,8 @@ class FastBand4PctStrategy(BaseStrategy):
     @property
     def description(self) -> str:
         return (
-            "宽基ETF超跌反弹捕手：PE估值+技术面双维度打分，从25只宽基中精选Top 5。\n\n"
-            "**选基**：PE低估(25%) + 入场时机(35%) + 波动性(25%) + 流动性(15%)。\n"
+            "宽基ETF超跌反弹捕手：技术面为主+PE安全边际为辅，25只宽基全量排名。\n\n"
+            "**选基**：入场时机(50%) + 波动性(25%) + 流动性(15%) + PE安全边际(10%)。\n"
             "**入场**：近3日跌幅(4分) + K线反转(2分) + RSI超卖(2分) + 均线支撑(2分)，≥5分买入。\n"
             "**出场**：+2.5%止盈 | -2%止损 | 3天时间止盈。\n\n"
             "买在低估+超跌时，赚取反弹快钱。"
@@ -621,17 +621,17 @@ class FastBand4PctStrategy(BaseStrategy):
 
     @staticmethod
     def select_top_etfs(
-        n: int = 5,
+        n: int = 25,
         candidates: list[dict] | None = None,
         max_price: float = 20.0,
     ) -> list[dict]:
-        """Score & rank 25 broad-market ETFs, return top N.
+        """Score & rank all broad-market ETFs, return top N (default all 25).
 
         Composite score (0-100):
-        - PE低估 25%：PE分位 <30% → 满分25，30-50% → 20，50-70% → 12，>70% → 5
-        - 入场时机 35%：当前 entry score / 10 * 35
-        - 波动性 25%：振幅越大分越高（反弹空间大）
-        - 流动性 15%：换手率越高越好
+        - 入场时机 50%：当前 entry score / 10 * 50（核心：跌够了没？反弹信号？）
+        - 波动性 25%：振幅越大反弹空间越大
+        - 流动性 15%：换手率越高越容易进出
+        - PE安全边际 10%：PE分位越低越好（辅助：别买在极度高估时）
 
         Uses batch API + parallel history fetch.  ~2 seconds for 25 ETFs.
         """
@@ -671,7 +671,7 @@ class FastBand4PctStrategy(BaseStrategy):
             if cp is None or cp <= 0 or cp > max_price:
                 continue
 
-            # ═══ 1. PE估值分 (0-25) ═══
+            # ═══ 1. PE安全边际分 (0-10) ═══
             pe_score = 0.0
             pe_pct = None
             pe_val = info.get("pe_ttm") or info.get("pe_static")
@@ -683,20 +683,18 @@ class FastBand4PctStrategy(BaseStrategy):
                 pass
 
             if pe_pct is not None:
-                if pe_pct < 10:
-                    pe_score = 25.0
-                elif pe_pct < 30:
-                    pe_score = 22.0
+                if pe_pct < 30:
+                    pe_score = 10.0       # 低估满分
                 elif pe_pct < 50:
-                    pe_score = 17.0
+                    pe_score = 7.0        # 合理偏高
                 elif pe_pct < 70:
-                    pe_score = 10.0
+                    pe_score = 4.0        # 偏高
                 else:
-                    pe_score = 5.0
+                    pe_score = 1.0        # 高估，仅象征性给分
             else:
-                pe_score = 10.0  # no PE data, neutral
+                pe_score = 5.0  # no PE data, neutral
 
-            # ═══ 2. 入场时机分 (0-35) ═══
+            # ═══ 2. 入场时机分 (0-50) ═══
             entry_score = 0.0
             entry_details: list[str] = []
             hist = hist_cache.get(code)
@@ -705,7 +703,7 @@ class FastBand4PctStrategy(BaseStrategy):
                 h["_ma20"] = h["close"].rolling(window=20, min_periods=20).mean()
                 try:
                     result = FastBand4PctStrategy._compute_entry_score(h, len(h) - 1, params)
-                    entry_score = result["total_score"] / 10.0 * 35.0  # scale to 0-35
+                    entry_score = result["total_score"] / 10.0 * 50.0  # scale to 0-50
                     entry_details = result["details"]
                 except Exception:
                     pass
@@ -731,7 +729,7 @@ class FastBand4PctStrategy(BaseStrategy):
             else:
                 pe_badge = "⚪ PE无数据"
 
-            entry_raw = round(entry_score / 35.0 * 10, 1)
+            entry_raw = round(entry_score / 50.0 * 10, 1)
 
             # ═══ Action recommendation ═══
             pe_is_low = pe_pct is not None and pe_pct < 30
