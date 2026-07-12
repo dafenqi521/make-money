@@ -1,5 +1,7 @@
 """ETF 投资决策系统 — 策略优先的统一仪表盘"""
 
+from __future__ import annotations
+
 import streamlit as st
 from src.data.fetcher import fetch_etf_hist, fetch_etf_info
 from src.strategy.registry import get_registry
