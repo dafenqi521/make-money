@@ -76,23 +76,32 @@ def _detect_reversal(row: pd.Series, prev_row: pd.Series) -> tuple[int, str]:
     lower_shadow = min(c, o) - l
     total_range = h - l if h > l else 0.001
 
-    # 锤子线
+    # ── 强反转信号 (2分) ──
+    # 锤子线：长下影，小实体，小上影
     if body > 0 and lower_shadow >= 2 * body and upper_shadow <= body * 0.5:
         return 2, "锤子线（长下影反转）"
-    # 看涨吞没
+    # 看涨吞没：阳包阴
     if c > o and pc < po and o <= pc and c >= po:
         return 2, "看涨吞没（阳包阴）"
-    # 启明星
+    # 启明星：大阴→小阳→回升
     prev_body = abs(pc - po)
     if prev_body > 0 and body < prev_body * 0.5 and pc < po and c > o:
         if o <= pc and c > (pc + po) / 2:
             return 2, "启明星（晨星反转）"
-    # 十字星
-    if body < total_range * 0.1 and lower_shadow > body * 2:
+
+    # ── 中等反转信号 (1分) ──
+    # 十字星：实体极小+下影长
+    if body < total_range * 0.15 and lower_shadow > upper_shadow * 2:
         return 1, "十字星（底部企稳）"
-    # 长下影线
+    # 长下影线：买盘介入
     if lower_shadow > body * 1.5 and c > o:
         return 1, "长下影线（买盘支撑）"
+    # 阳线止跌：连跌后首根阳线
+    if c > o and pc < po:
+        return 1, "阳线止跌（连跌后首阳）"
+    # 下影占优：盘中跌但收回来
+    if lower_shadow > total_range * 0.5 and lower_shadow > upper_shadow * 2:
+        return 1, "盘中探底回升（下影占优）"
 
     return 0, "无反转形态"
 
