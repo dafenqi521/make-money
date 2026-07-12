@@ -179,7 +179,7 @@ with st.sidebar:
 
         st.session_state["band_current_code"] = symbol
     elif strategy.name == "4%快速波段":
-        st.caption("⚡ 4%快速波段 · 宽基反弹捕手")
+        st.caption("⚡ 4%快速波段 · PE+技术面双维度选基")
 
         # Check position
         has_position = False
@@ -194,40 +194,33 @@ with st.sidebar:
 
         if st.button("🔄 重新扫描", type="secondary", use_container_width=True,
                      key="fastband_scan_btn"):
-            st.session_state.pop("fastband_selected_etf", None)
-            st.session_state.pop("fastband_selected_info", None)
+            st.session_state.pop("fastband_top5", None)
+            st.session_state.pop("fastband_selected_symbol", None)
 
         if has_position and holding_code:
             symbol = holding_code
             st.success(f"📌 持仓中：{holding_code}")
-            st.session_state["fastband_selected_etf"] = holding_code
+            st.session_state["fastband_selected_symbol"] = holding_code
         else:
-            selected = st.session_state.get("fastband_selected_etf")
-            selected_info = st.session_state.get("fastband_selected_info")
+            # Show current pick compactly
+            current_pick = st.session_state.get("fastband_selected_symbol", "")
+            if current_pick:
+                pick_info = st.session_state.get("fastband_selected_info", {})
+                pick_name = pick_info.get("name_from_api", pick_info.get("name", ""))
+                pick_score = pick_info.get("score", "?")
+                pick_entry = pick_info.get("entry_score_raw", "?")
+                st.success(f"✅ {current_pick} {pick_name} | 综合{pick_score}分 | 入场{pick_entry}/10")
+            else:
+                st.info("👇 主区域选一只")
 
-            if selected is None:
-                with st.spinner("正在扫描宽基ETF反弹机会..."):
-                    from src.strategy.fast_band_4pct import FastBand4PctStrategy
-                    best = FastBand4PctStrategy.select_best_etf()
-                    if best:
-                        selected = best["code"]
-                        selected_info = best
-                        st.session_state["fastband_selected_etf"] = selected
-                        st.session_state["fastband_selected_info"] = selected_info
-
-            if selected_info:
-                price_str = f"¥{selected_info.get('current_price', '?'):.3f}" if selected_info.get("current_price") else "?"
-                entry_s = selected_info.get("entry_score", "?")
-                st.info(
-                    f"📌 **{selected_info.get('code')} {selected_info.get('name_from_api', selected_info.get('name', ''))}**\n\n"
-                    f"当前价：{price_str} | 入场评分：{entry_s}/10 | 振幅：{selected_info.get('amplitude', 0):.1f}%"
-                )
-                # Show top score reasons
-                details = selected_info.get("score_details", [])
-                if details:
-                    st.caption(" | ".join(details[:2]))
-
-            symbol = selected if selected else "510300"
+            # Manual input fallback
+            manual = st.text_input(
+                "或手动输入代码",
+                value=current_pick if current_pick else "",
+                placeholder="如 510300",
+                key="fastband_manual_input",
+            ).strip()
+            symbol = manual if manual else current_pick if current_pick else ""
 
     elif strategy.name == "4%定投法":
         st.caption("🎯 4%定投法 · 智能选基")
@@ -328,6 +321,83 @@ if run_screener or (not symbol and st.session_state.get("screener_results") is N
         st.rerun()
 
 # ── ETF Dashboard section ────────────────────────────────────────
+
+# --- 4% Fast Band: show Top 5 ranking when no ETF selected ---
+if strategy.name == "4%快速波段" and (not symbol or len(symbol) != 6):
+    st.header("⚡ 4%快速波段 · Top 5 超跌反弹机会")
+
+    # Ensure scan has run
+    if st.session_state.get("fastband_top5") is None:
+        with st.spinner("正在扫描25只宽基ETF（PE估值+技术面双维度打分）..."):
+            from src.strategy.fast_band_4pct import FastBand4PctStrategy
+            st.session_state["fastband_top5"] = FastBand4PctStrategy.select_top_etfs(5)
+
+    top5 = st.session_state.get("fastband_top5", [])
+
+    if top5:
+        st.caption("PE低估(25%) + 入场时机(35%) + 波动性(25%) + 流动性(15%)，点击一只开始分析")
+
+        for i, etf in enumerate(top5):
+            medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i]
+
+            # PE badge
+            pe_badge = etf.get("pe_badge", "⚪ PE无数据")
+
+            # Entry score details
+            entry_raw = etf.get("entry_score_raw", 0)
+            if entry_raw >= 5:
+                entry_badge = f"🟢 入场{entry_raw:.0f}/10"
+            elif entry_raw >= 3:
+                entry_badge = f"🟡 入场{entry_raw:.0f}/10"
+            else:
+                entry_badge = f"🔴 入场{entry_raw:.0f}/10"
+
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([1.5, 2, 2, 1.5])
+
+                with c1:
+                    st.markdown(f"## {medal}")
+                    st.metric("综合评分", f"{etf['score']:.0f}/100")
+
+                with c2:
+                    st.markdown(f"**{etf['code']}** {etf.get('name_from_api', etf['name'])}")
+                    st.caption(f"💰 ¥{etf['current_price']:.3f}")
+                    st.caption(pe_badge)
+                    st.caption(entry_badge)
+
+                with c3:
+                    # Score breakdown
+                    st.caption(f"PE{etf['pe_score']:.0f} + 入场{etf['entry_score_raw']:.0f} + 波动{etf['volatility_score']:.0f} + 流动{etf['liquidity_score']:.0f}")
+                    details = etf.get("score_details", [])
+                    if details:
+                        st.caption(" | ".join(details[:2]))
+
+                with c4:
+                    if st.button(f"📊 查看 {etf['code']}", key=f"fastband_pick_{i}",
+                                 type="primary", use_container_width=True):
+                        st.session_state["fastband_selected_symbol"] = etf["code"]
+                        st.session_state["fastband_selected_info"] = etf
+                        st.rerun()
+    else:
+        st.warning("扫描失败，请在侧边栏手动输入 ETF 代码")
+
+    # Custom input below Top 5
+    st.divider()
+    with st.expander("🔍 或者自己输入任意 ETF 代码", expanded=False):
+        custom = st.text_input(
+            "输入 6 位代码",
+            placeholder="如 159915（创业板ETF）",
+            key="fastband_custom_input",
+        ).strip()
+        if custom and len(custom) == 6 and custom.isdigit():
+            if st.button("📊 分析这个 ETF", key="fastband_custom_go", type="primary",
+                         use_container_width=True):
+                st.session_state["fastband_selected_symbol"] = custom
+                st.rerun()
+        elif custom:
+            st.caption("代码应为 6 位数字")
+
+    st.stop()
 
 # --- 4% DCA: show Top 3 ranking when no ETF selected ---
 if strategy.name == "4%定投法" and (not symbol or len(symbol) != 6):
