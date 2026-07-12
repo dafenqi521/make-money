@@ -181,15 +181,25 @@ with st.sidebar:
     elif strategy.name == "快速波段":
         st.caption("⚡ 快速波段 · PE+技术面双维度选基")
 
+        # ── Capital input ──
+        total_capital = st.number_input(
+            "💰 你的总资金（元）",
+            min_value=500, max_value=100000, value=2000, step=500,
+            key="fastband_capital",
+            help="用于计算实际买卖股数（100股整数倍）",
+        )
+
         # Check position
         has_position = False
         holding_code = None
+        holding_info = None
         if "portfolio" in st.session_state:
             pm = st.session_state["portfolio"]
             for h in pm.list_holdings() if hasattr(pm, "list_holdings") else []:
                 if h.shares > 0:
                     has_position = True
                     holding_code = h.code
+                    holding_info = h
                     break
 
         if st.button("🔄 重新扫描", type="secondary", use_container_width=True,
@@ -199,7 +209,27 @@ with st.sidebar:
 
         if has_position and holding_code:
             symbol = holding_code
-            st.success(f"📌 持仓中：{holding_code}")
+            h = holding_info
+            cost = h.avg_cost if hasattr(h, 'avg_cost') else 0
+            shares = h.shares if hasattr(h, 'shares') else 0
+            mkt_val = shares * float(st.session_state.get("_last_price", 0) or 0)
+            pnl_pct = (mkt_val / (cost * shares) - 1) if cost and shares else 0
+
+            st.success(f"📌 持仓：{holding_code} | {shares}股 | 成本¥{cost:.3f}")
+            if pnl_pct != 0:
+                pnl_color = "green" if pnl_pct > 0 else "red"
+                st.caption(f"浮动盈亏：:{pnl_color}[{pnl_pct:+.1%}]")
+
+            # Sell recommendation based on P&L
+            take_profit = 0.03
+            stop_loss = 0.02
+            if pnl_pct >= take_profit:
+                st.warning(f"🎯 已触发止盈（+{pnl_pct:.1%} ≥ +{take_profit:.0%}），建议**全部卖出** {shares} 股")
+            elif pnl_pct <= -stop_loss:
+                st.error(f"🛑 已触发止损（{pnl_pct:.1%} ≤ -{stop_loss:.0%}），建议**全部卖出** {shares} 股")
+            else:
+                st.info(f"📊 继续持有 | 止盈+{take_profit:.0%} | 止损-{stop_loss:.0%}")
+
             st.session_state["fastband_selected_symbol"] = holding_code
         else:
             # Show current pick compactly
@@ -207,9 +237,8 @@ with st.sidebar:
             if current_pick:
                 pick_info = st.session_state.get("fastband_selected_info", {})
                 pick_name = pick_info.get("name_from_api", pick_info.get("name", ""))
-                pick_score = pick_info.get("score", "?")
-                pick_entry = pick_info.get("entry_score_raw", "?")
-                st.success(f"✅ {current_pick} {pick_name} | 综合{pick_score}分 | 入场{pick_entry}/10")
+                pick_action = pick_info.get("action", "?")
+                st.success(f"✅ {current_pick} {pick_name} | {pick_action}")
             else:
                 st.info("👇 主区域选一只")
 
@@ -221,6 +250,36 @@ with st.sidebar:
                 key="fastband_manual_input",
             ).strip()
             symbol = manual if manual else current_pick if current_pick else ""
+
+        # ── Position sizing suggestion (when ETF selected and not holding) ──
+        if not has_position and symbol and len(symbol) == 6:
+            pick_info = st.session_state.get("fastband_selected_info", {})
+            entry_raw = pick_info.get("entry_score_raw", 0)
+            cp = pick_info.get("current_price", 0)
+
+            if cp > 0 and entry_raw > 0:
+                position_pct = 0.5  # default 50%
+                if entry_raw >= 7:
+                    position_pct = 0.8
+                    label = "重仓"
+                elif entry_raw >= 5:
+                    position_pct = 0.5
+                    label = "半仓"
+                elif entry_raw >= 3:
+                    position_pct = 0.3
+                    label = "轻仓"
+                else:
+                    position_pct = 0.0
+                    label = "不入"
+
+                if position_pct > 0:
+                    budget = total_capital * position_pct
+                    shares = max(100, int(budget / cp) // 100 * 100)
+                    amount = shares * cp
+                    st.info(
+                        f"💡 建议**{label}**（{position_pct:.0%}仓位）：买入 **{shares} 股** ≈ ¥{amount:.0f} "
+                        f"（{total_capital}元资金的{position_pct:.0%}）"
+                    )
 
     elif strategy.name == "4%定投法":
         st.caption("🎯 4%定投法 · 智能选基")
