@@ -284,16 +284,19 @@ else:
     if pe_percentile is not None:
         render_pe_percentile_overview(pe_percentile)
 
-    # ── 1.7 Multi-Factor Daily Signal Panel ───────────────────────
-    daily_signal = compute_daily_signal(
-        df, info, pe_percentile=pe_percentile, macro_pulse=macro_pulse,
-    )
-    render_signal_panel(daily_signal)
-
-    # ── 1.8 Extract portfolio context (for strategy anchoring) ────
+    # ── 1.7 Portfolio context (needed by both signal panel & strategy) ──
     _pf_ctx = None
+    _has_position = False
     if "portfolio" in st.session_state:
         _pf_ctx = get_portfolio_context(st.session_state["portfolio"], symbol)
+        _has_position = _pf_ctx.get("has_position", False) if _pf_ctx else False
+
+    # ── 1.8 Multi-Factor Daily Signal Panel ───────────────────────
+    daily_signal = compute_daily_signal(
+        df, info, pe_percentile=pe_percentile, macro_pulse=macro_pulse,
+        has_position=_has_position,
+    )
+    render_signal_panel(daily_signal)
 
     # ── 2. Live Signal ────────────────────────────────────────────
     try:

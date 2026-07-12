@@ -58,6 +58,7 @@ class DailySignal:
     steps: list[str] = field(default_factory=list)
     current_price: float | None = None
     pe_value: float | None = None
+    has_position: bool = False
 
 
 # =========================================================================
@@ -388,12 +389,16 @@ def compute_daily_signal(
     info: dict,
     pe_percentile: "PEPercentile | None" = None,
     macro_pulse: "MacroPulse | None" = None,
+    has_position: bool = False,
 ) -> DailySignal:
     """Compute the full multi-factor daily operation recommendation.
 
     This is the main entry point.  It computes PE, MA, and Grid factor
     signals independently, then combines them into a weighted composite
     with specific action steps.
+
+    When *has_position* is False, bearish signals change from "reduce/sell"
+    to "avoid/wait" (you can't reduce a position you don't have).
     """
     pe_value = info.get("pe_ttm") or info.get("pe_static")
     current_price = info.get("current_price")
@@ -437,14 +442,24 @@ def compute_daily_signal(
         action_color = PRIMARY
     elif composite_score >= 0.35:
         action = "reduce"
-        action_label = "建议减仓"
-        action_icon = "🟡"
-        action_color = WARNING
+        if has_position:
+            action_label = "建议减仓"
+            action_icon = "🟡"
+            action_color = WARNING
+        else:
+            action_label = "不建议买入"
+            action_icon = "🟡"
+            action_color = WARNING
     else:
         action = "sell"
-        action_label = "建议卖出"
-        action_icon = "🔴"
-        action_color = DANGER
+        if has_position:
+            action_label = "建议卖出"
+            action_icon = "🔴"
+            action_color = DANGER
+        else:
+            action_label = "不建议入场"
+            action_icon = "🔴"
+            action_color = DANGER
 
     # --- Build summary ---
     bullish_count = sum(1 for f in factors if f.signal == "bullish")
@@ -464,6 +479,7 @@ def compute_daily_signal(
     # --- Build action steps ---
     steps = _build_action_steps(
         action, factors, current_price, pe_value, macro_pulse,
+        has_position=has_position,
     )
 
     return DailySignal(
@@ -477,6 +493,7 @@ def compute_daily_signal(
         steps=steps,
         current_price=current_price,
         pe_value=pe_value,
+        has_position=has_position,
     )
 
 
@@ -486,6 +503,7 @@ def _build_action_steps(
     current_price: float | None,
     pe_value: float | None,
     macro_pulse: "MacroPulse | None",
+    has_position: bool = False,
 ) -> list[str]:
     """Generate specific, actionable steps based on the composite signal."""
     steps: list[str] = []
@@ -525,18 +543,35 @@ def _build_action_steps(
         steps.append("💡 建议：不买不卖，等待更明确的信号出现再操作")
 
     elif action == "reduce":
-        steps.append(f"⚠️ 多数因子偏空，{price_str}建议考虑逐步减仓")
-        steps.append("💡 建议：分2-3次减仓，每次减1/3，锁定部分利润")
+        if has_position:
+            steps.append(f"⚠️ 多数因子偏空，{price_str}建议考虑逐步减仓")
+            steps.append("💡 建议：分2-3次减仓，每次减1/3，锁定部分利润")
+        else:
+            steps.append(f"⚠️ 多数因子偏空，{price_str}不建议买入")
+            pe_factor = factors[0]
+            if pe_factor.signal == "bearish":
+                steps.append("📊 PE估值偏高，当前位置风险大于机会")
+            steps.append("💡 建议：暂时观望，等信号好转再入场")
 
     elif action == "sell":
-        steps.append(f"🚨 多因子共振看空，{price_str}建议减仓或清仓")
-        pe_factor = factors[0]
-        if pe_factor.signal == "bearish":
-            steps.append("📊 PE估值过高，历史分位处于危险区间")
-        ma_factor = factors[1] if len(factors) > 1 else None
-        if ma_factor and ma_factor.signal == "bearish":
-            steps.append("📈 均线趋势转空，死叉/空头排列确认下跌趋势")
-        steps.append("💡 建议：立即减仓50%以上，剩余部分设置止损线")
+        if has_position:
+            steps.append(f"🚨 多因子共振看空，{price_str}建议减仓或清仓")
+            pe_factor = factors[0]
+            if pe_factor.signal == "bearish":
+                steps.append("📊 PE估值过高，历史分位处于危险区间")
+            ma_factor = factors[1] if len(factors) > 1 else None
+            if ma_factor and ma_factor.signal == "bearish":
+                steps.append("📈 均线趋势转空，死叉/空头排列确认下跌趋势")
+            steps.append("💡 建议：立即减仓50%以上，剩余部分设置止损线")
+        else:
+            steps.append(f"🚨 多因子共振看空，{price_str}不建议入场")
+            pe_factor = factors[0]
+            if pe_factor.signal == "bearish":
+                steps.append("📊 PE估值过高，历史分位处于危险区间")
+            ma_factor = factors[1] if len(factors) > 1 else None
+            if ma_factor and ma_factor.signal == "bearish":
+                steps.append("📈 均线趋势转空，死叉/空头排列确认下跌趋势")
+            steps.append("💡 建议：不要买入，持币等待更好的入场时机")
 
     # --- Macro overlay ---
     if macro_pulse is not None and macro_pulse.total_signals > 0:
