@@ -88,7 +88,7 @@ with st.sidebar:
     strategy_names = registry.get_names()
     # Default to 短线波段 if available, else 4%定投法, else index 0
     default_idx = 0
-    preferred = ["4%快速波段", "4%定投法", "短线波段"]
+    preferred = ["快速波段", "4%定投法", "短线波段"]
     for p in preferred:
         if p in strategy_names:
             default_idx = strategy_names.index(p)
@@ -178,8 +178,8 @@ with st.sidebar:
             symbol = selected_etf if selected_etf else "510300"
 
         st.session_state["band_current_code"] = symbol
-    elif strategy.name == "4%快速波段":
-        st.caption("⚡ 4%快速波段 · PE+技术面双维度选基")
+    elif strategy.name == "快速波段":
+        st.caption("⚡ 快速波段 · PE+技术面双维度选基")
 
         # Check position
         has_position = False
@@ -323,8 +323,8 @@ if run_screener or (not symbol and st.session_state.get("screener_results") is N
 # ── ETF Dashboard section ────────────────────────────────────────
 
 # --- 4% Fast Band: show Top 5 ranking when no ETF selected ---
-if strategy.name == "4%快速波段" and (not symbol or len(symbol) != 6):
-    st.header("⚡ 4%快速波段 · 25只宽基全量排名")
+if strategy.name == "快速波段" and (not symbol or len(symbol) != 6):
+    st.header("⚡ 快速波段 · 25只宽基全量排名")
 
     # Ensure scan has run
     if st.session_state.get("fastband_top5") is None:
@@ -552,7 +552,7 @@ else:
 
     # ── 1.5 PE Percentile Overview (when available) ────────────────
     # Skip for band strategies — PE valuation is irrelevant for short-term trading
-    if pe_percentile is not None and strategy.name not in ("短线波段", "4%快速波段"):
+    if pe_percentile is not None and strategy.name not in ("短线波段", "快速波段"):
         render_pe_percentile_overview(pe_percentile)
 
     # ── 1.7 Portfolio context (needed by both signal panel & strategy) ──
@@ -564,7 +564,7 @@ else:
 
     # ── 1.8 Multi-Factor Daily Signal Panel ───────────────────────
     # Skip for band strategies — their own live signal + dashboard cards are the authority
-    if strategy.name not in ("短线波段", "4%快速波段"):
+    if strategy.name not in ("短线波段", "快速波段"):
         daily_signal = compute_daily_signal(
             df, info, pe_percentile=pe_percentile, macro_pulse=macro_pulse,
             has_position=_has_position,
@@ -611,7 +611,7 @@ else:
 
     # ── 6.5 PE Band Chart (when PE history available) ───────────
     # Skip for band strategies
-    if pe_percentile is not None and strategy.name not in ("短线波段", "4%快速波段"):
+    if pe_percentile is not None and strategy.name not in ("短线波段", "快速波段"):
         with st.expander(
             f"📈 PE Band · {pe_percentile.index_name}（历史PE走势图）",
             expanded=False,

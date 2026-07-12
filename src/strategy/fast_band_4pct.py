@@ -1,4 +1,4 @@
-"""4%快速波段 — 宽基ETF超跌反弹，PE+技术面双维度选基。
+"""快速波段 — 宽基ETF超跌反弹，技术面+PE双维度选基。
 
 核心理念：在低估宽基中找超跌反弹机会。
 - 候选池：25只核心宽基ETF（与4%定投法同池）
@@ -130,7 +130,7 @@ def _compute_rsi_val(closes: np.ndarray, period: int, idx: int) -> float | None:
 # =============================================================================
 
 class FastBand4PctStrategy(BaseStrategy):
-    """4%快速波段 — PE+技术面双维度选基，捕捉宽基超跌反弹。
+    """快速波段 — 技术面+PE双维度选基，捕捉宽基超跌反弹。
 
     选基（25只→Top 5）：
     - PE低估 25%：PE分位越低越好（<30%满分）
@@ -151,7 +151,7 @@ class FastBand4PctStrategy(BaseStrategy):
 
     @property
     def name(self) -> str:
-        return "4%快速波段"
+        return "快速波段"
 
     @property
     def description(self) -> str:
@@ -170,7 +170,7 @@ class FastBand4PctStrategy(BaseStrategy):
     def get_default_params(self) -> dict:
         return {
             "entry_threshold": 4,
-            "take_profit_pct": 0.025,
+            "take_profit_pct": 0.03,
             "stop_loss_pct": 0.02,
             "max_hold_days": 3,
             "decline_lookback": 3,
