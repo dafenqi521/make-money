@@ -8,8 +8,15 @@ tracking is handled by the BacktestEngine, not by strategies.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional, TYPE_CHECKING
 
 import pandas as pd
+
+from src.strategy.signals import LiveSignal, DashboardCard
+
+if TYPE_CHECKING:
+    from src.data.pe_history import PEPercentile
+    from src.data.macro_pulse import MacroPulse
 
 
 class BaseStrategy(ABC):
@@ -106,6 +113,62 @@ class BaseStrategy(ABC):
             elif isinstance(default, str) and not isinstance(val, str):
                 errors.append(f"参数 {key} 应为字符串，收到 {type(val).__name__}")
         return errors
+
+    # ------------------------------------------------------------------
+    # Live signal & dashboard (override in subclasses)
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def get_live_signal(
+        self, df: pd.DataFrame, info: dict, **kwargs
+    ) -> LiveSignal:
+        """Generate an actionable recommendation based on current market data.
+
+        Uses the latest bar from *df* plus the real-time quote in *info*
+        to determine what the strategy would do *right now*.
+
+        Args:
+            df: Historical OHLCV DataFrame (date-descending, from fetch_etf_hist).
+            info: Real-time quote dict (from fetch_etf_info).
+            **kwargs: Strategy-specific parameters.
+
+        Returns:
+            LiveSignal with action, trigger prices, zone, and reasoning.
+        """
+        ...
+
+    @abstractmethod
+    def get_dashboard_cards(
+        self, df: pd.DataFrame, info: dict, **kwargs
+    ) -> list[DashboardCard]:
+        """Return strategy-specific info cards for the dashboard grid.
+
+        Args:
+            df: Historical OHLCV DataFrame.
+            info: Real-time quote dict.
+            **kwargs: Strategy-specific parameters.
+
+        Returns:
+            List of DashboardCard objects (order = display order).
+        """
+        ...
+
+    def get_signal_markers(
+        self, df: pd.DataFrame, **kwargs
+    ) -> pd.DataFrame:
+        """Extract buy/sell markers for chart overlay.
+
+        Default: runs generate_signals() and filters to non-hold rows.
+        Override for custom marker logic.
+
+        Returns:
+            DataFrame with columns [date, close, signal, signal_reason].
+        """
+        sig_df = self.generate_signals(df, **kwargs)
+        markers = sig_df[sig_df["signal"].isin(["buy", "sell"])][
+            ["date", "close", "signal", "signal_reason"]
+        ].copy()
+        return markers
 
     def __repr__(self) -> str:
         return f"<{self.name} strategy>"

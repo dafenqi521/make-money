@@ -1,0 +1,289 @@
+"""SQLite persistence for paper-trading portfolio.
+
+Stores portfolio state (cash, P&L), holdings, and full trade history
+so that positions survive Streamlit server restarts.
+
+Schema (3 tables, auto-created):
+  - portfolio_state: singleton row with cash, P&L, config
+  - holdings: one row per ETF position
+  - trades: full trade log, append-only
+
+Usage::
+
+    from src.data.portfolio_db import PortfolioDB
+
+    db = PortfolioDB()
+    db.save(pm)                           # persist after trade
+    pm = db.load()                        # restore on startup, or None
+    db.reset()                            # wipe everything
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+from pathlib import Path
+
+from src.engine.portfolio import PortfolioManager, Holding, ExecutedTrade
+from src.engine.broker import Broker
+
+# ---------------------------------------------------------------------------
+# DB location
+# ---------------------------------------------------------------------------
+
+_DB_DIR = Path(__file__).resolve().parent / "portfolio_db"
+_DB_PATH = _DB_DIR / "portfolio.sqlite3"
+
+
+def _get_db_path() -> Path:
+    """Ensure the DB directory exists and return the path."""
+    _DB_DIR.mkdir(parents=True, exist_ok=True)
+    return _DB_PATH
+
+
+# ---------------------------------------------------------------------------
+# SQL
+# ---------------------------------------------------------------------------
+
+CREATE_TABLES = """
+CREATE TABLE IF NOT EXISTS portfolio_state (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    initial_capital REAL NOT NULL DEFAULT 100000,
+    cash REAL NOT NULL DEFAULT 100000,
+    realized_pnl REAL NOT NULL DEFAULT 0,
+    commission_rate REAL DEFAULT 0.0003,
+    min_commission REAL DEFAULT 5.0,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS holdings (
+    code TEXT PRIMARY KEY,
+    name TEXT DEFAULT '',
+    shares INTEGER NOT NULL DEFAULT 0,
+    avg_cost REAL NOT NULL DEFAULT 0,
+    total_cost REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id TEXT UNIQUE NOT NULL,
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    action TEXT NOT NULL,
+    price REAL NOT NULL,
+    shares INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    commission REAL DEFAULT 0,
+    net_amount REAL NOT NULL,
+    pnl REAL,
+    pnl_pct REAL,
+    reason TEXT DEFAULT ''
+);
+"""
+
+UPSERT_STATE = """
+INSERT OR REPLACE INTO portfolio_state
+    (id, initial_capital, cash, realized_pnl, commission_rate, min_commission, updated_at)
+VALUES (1, ?, ?, ?, ?, ?, datetime('now', 'localtime'));
+"""
+
+INSERT_TRADE = """
+INSERT OR IGNORE INTO trades
+    (trade_id, date, code, name, action, price, shares, amount,
+     commission, net_amount, pnl, pnl_pct, reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+"""
+
+UPSERT_HOLDING = """
+INSERT OR REPLACE INTO holdings (code, name, shares, avg_cost, total_cost)
+VALUES (?, ?, ?, ?, ?);
+"""
+
+CLEAR_HOLDINGS = "DELETE FROM holdings;"
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+class PortfolioDB:
+    """SQLite-backed persistence for a single paper-trading portfolio."""
+
+    def __init__(self, db_path: str | Path | None = None):
+        self._path = Path(db_path) if db_path else _get_db_path()
+        self._init_tables()
+
+    # ------------------------------------------------------------------
+    # Init
+    # ------------------------------------------------------------------
+
+    def _init_tables(self) -> None:
+        """Create tables if they don't exist (idempotent)."""
+        with self._conn() as conn:
+            conn.executescript(CREATE_TABLES)
+            conn.commit()
+
+    def _conn(self) -> sqlite3.Connection:
+        """Return a new connection (each call). Caller must close."""
+        conn = sqlite3.connect(str(self._path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    # ------------------------------------------------------------------
+    # Save
+    # ------------------------------------------------------------------
+
+    def save(self, pm: PortfolioManager) -> bool:
+        """Persist the full portfolio state (state + holdings + new trades).
+
+        Returns True on success.
+        """
+        try:
+            with self._conn() as conn:
+                # -- State --
+                conn.execute(UPSERT_STATE, (
+                    pm.initial_capital, pm.cash, pm.realized_pnl,
+                    pm.commission_rate, pm.min_commission,
+                ))
+
+                # -- Holdings (full replace) --
+                conn.execute(CLEAR_HOLDINGS)
+                for code, h in pm.holdings.items():
+                    if h.shares > 0:
+                        conn.execute(UPSERT_HOLDING, (
+                            code, h.name, h.shares, h.avg_cost, h.total_cost,
+                        ))
+
+                # -- Trades (append only, skip duplicates by trade_id) --
+                for t in pm.trades:
+                    conn.execute(INSERT_TRADE, (
+                        t.trade_id, t.date, t.code, t.name, t.action,
+                        t.price, t.shares, t.amount, t.commission,
+                        t.net_amount, t.pnl, t.pnl_pct, t.reason,
+                    ))
+
+                conn.commit()
+            return True
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # Load
+    # ------------------------------------------------------------------
+
+    def load(self) -> PortfolioManager | None:
+        """Restore portfolio from DB. Returns None if no saved state exists."""
+        try:
+            with self._conn() as conn:
+                # State
+                row = conn.execute(
+                    "SELECT initial_capital, cash, realized_pnl, commission_rate, "
+                    "min_commission FROM portfolio_state WHERE id=1"
+                ).fetchone()
+
+                if row is None:
+                    return None  # First run — no state yet
+
+                pm = PortfolioManager(
+                    initial_capital=row[0],
+                    commission_rate=row[3],
+                    min_commission=row[4],
+                )
+                pm.cash = row[1]
+                pm._realized_pnl = row[2]
+
+                # Holdings
+                for hr in conn.execute(
+                    "SELECT code, name, shares, avg_cost, total_cost FROM holdings"
+                ):
+                    if hr[2] > 0:
+                        pm._holdings[hr[0]] = Holding(
+                            code=hr[0], name=hr[1], shares=hr[2],
+                            avg_cost=hr[3], total_cost=hr[4],
+                        )
+
+                # Trades (replay in chronological order to rebuild state)
+                for tr in conn.execute(
+                    "SELECT trade_id, date, code, name, action, price, shares, "
+                    "amount, commission, net_amount, pnl, pnl_pct, reason "
+                    "FROM trades ORDER BY id ASC"
+                ):
+                    pnl_val = tr[10] if tr[10] is not None else None
+                    pnl_pct_val = tr[11] if tr[11] is not None else None
+                    pm._trades.append(ExecutedTrade(
+                        trade_id=tr[0], date=tr[1], code=tr[2], name=tr[3],
+                        action=tr[4], price=tr[5], shares=tr[6],
+                        amount=tr[7], commission=tr[8], net_amount=tr[9],
+                        pnl=pnl_val, pnl_pct=pnl_pct_val, reason=tr[12] or "",
+                    ))
+
+                # Recalculate realized P&L from sell trades
+                pm._realized_pnl = sum(
+                    t.pnl for t in pm._trades if t.action == "sell" and t.pnl
+                )
+
+                return pm
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def get_trade_count(self) -> int:
+        """Total number of trades stored."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute("SELECT COUNT(*) FROM trades").fetchone()
+                return row[0] if row else 0
+        except Exception:
+            return 0
+
+    def get_all_trades(self, limit: int = 100) -> list[dict]:
+        """Return recent trades as dicts (most recent first)."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT trade_id, date, code, name, action, price, shares, "
+                    "amount, net_amount, pnl, pnl_pct, reason "
+                    "FROM trades ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
+
+            return [
+                {
+                    "trade_id": r[0][:8], "日期": r[1], "代码": r[2], "名称": r[3],
+                    "操作": "买入" if r[4] == "buy" else "卖出",
+                    "价格": round(r[5], 4), "股数": r[6],
+                    "金额": round(abs(r[8]), 2) if r[8] is not None else round(r[7], 2),
+                    "盈亏": (round(r[9], 2) if r[9] is not None else "—"),
+                    "盈亏%": (f"{r[10]:+.2%}" if r[10] is not None else "—"),
+                    "原因": r[11] or "",
+                }
+                for r in rows
+            ]
+        except Exception:
+            return []
+
+    # ------------------------------------------------------------------
+    # Reset
+    # ------------------------------------------------------------------
+
+    def reset(self) -> bool:
+        """Drop all tables and re-create them. Returns True on success."""
+        try:
+            with self._conn() as conn:
+                conn.execute("DROP TABLE IF EXISTS trades")
+                conn.execute("DROP TABLE IF EXISTS holdings")
+                conn.execute("DROP TABLE IF EXISTS portfolio_state")
+                conn.commit()
+            self._init_tables()
+            return True
+        except Exception:
+            return False
+
+    @property
+    def db_path(self) -> str:
+        return str(self._path)

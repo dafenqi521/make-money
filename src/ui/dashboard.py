@@ -183,7 +183,17 @@ def render_bid_ask_panel(info: dict) -> None:
 # Candlestick chart
 # ---------------------------------------------------------------------------
 
-def render_price_chart(df: pd.DataFrame) -> None:
+def render_price_chart(
+    df: pd.DataFrame,
+    markers: pd.DataFrame | None = None,
+) -> None:
+    """Render OHLC candlestick chart with MA overlays and volume subplot.
+
+    Args:
+        df: OHLCV DataFrame (will be sorted date-ascending internally).
+        markers: Optional DataFrame with columns [date, close, signal, signal_reason]
+                 for overlaying buy/sell markers on the chart.
+    """
     if df.empty:
         st.warning("暂无数据")
         return
@@ -219,6 +229,10 @@ def render_price_chart(df: pd.DataFrame) -> None:
                     mode="lines", name=col.upper(), line=dict(color=color, width=width),
                 ), row=1, col=1)
 
+    # ── Signal markers overlay ──
+    if markers is not None and not markers.empty:
+        _overlay_signal_markers(fig, markers)
+
     colors = [
         UP_COLOR if chart_df.iloc[i]["close"] >= chart_df.iloc[i]["open"]
         else DOWN_COLOR
@@ -236,6 +250,46 @@ def render_price_chart(df: pd.DataFrame) -> None:
     fig.update_yaxes(title_text="成交量", row=2, col=1)
 
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _overlay_signal_markers(fig, markers: pd.DataFrame) -> None:
+    """Add buy (green ▲) and sell (red ▼) markers to the candlestick subplot."""
+    buy_df = markers[markers["signal"] == "buy"].copy()
+    sell_df = markers[markers["signal"] == "sell"].copy()
+
+    if not buy_df.empty:
+        buy_df["hover"] = buy_df.apply(
+            lambda r: f"买入<br>{r['date'].strftime('%Y-%m-%d') if hasattr(r['date'], 'strftime') else str(r['date'])}<br>"
+            + (f"{r.get('signal_reason', '')}" if pd.notna(r.get("signal_reason")) else ""),
+            axis=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=buy_df["date"], y=buy_df["close"],
+                mode="markers", name="买入信号",
+                marker=dict(symbol="triangle-up", size=10, color=SUCCESS,
+                            line=dict(width=1, color="white")),
+                text=buy_df["hover"], hoverinfo="text",
+                showlegend=True,
+            ), row=1, col=1,
+        )
+
+    if not sell_df.empty:
+        sell_df["hover"] = sell_df.apply(
+            lambda r: f"卖出<br>{r['date'].strftime('%Y-%m-%d') if hasattr(r['date'], 'strftime') else str(r['date'])}<br>"
+            + (f"{r.get('signal_reason', '')}" if pd.notna(r.get("signal_reason")) else ""),
+            axis=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=sell_df["date"], y=sell_df["close"],
+                mode="markers", name="卖出信号",
+                marker=dict(symbol="triangle-down", size=10, color=DANGER,
+                            line=dict(width=1, color="white")),
+                text=sell_df["hover"], hoverinfo="text",
+                showlegend=True,
+            ), row=1, col=1,
+        )
 
 
 # ---------------------------------------------------------------------------

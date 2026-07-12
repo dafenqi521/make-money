@@ -1,0 +1,7 @@
+{
+  "pushplus_token": "把你的32位token填在这里",
+  "enabled": false,
+  "notify_on_actions": ["buy", "sell", "accumulate", "reduce"],
+  "etf_codes": ["510300"],
+  "last_notified": {}
+}

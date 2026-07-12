@@ -12,6 +12,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.strategy.base import BaseStrategy
+from src.strategy.signals import LiveSignal, DashboardCard
 
 
 class TrendFollowingStrategy(BaseStrategy):
@@ -143,3 +144,284 @@ class TrendFollowingStrategy(BaseStrategy):
             )
 
         return df
+
+    # ------------------------------------------------------------------
+    # Live signal for real-time dashboard
+    # ------------------------------------------------------------------
+
+    def get_live_signal(
+        self, df: pd.DataFrame, info: dict, **kwargs
+    ) -> LiveSignal:
+        """Generate an actionable trading recommendation from the latest bar.
+
+        Compares fast_ma vs slow_ma on the last two bars to detect golden-cross
+        (buy) / death-cross (sell) events, or the ongoing trend direction.
+        """
+        params = {**self.get_default_params(), **kwargs}
+        fast_col = params["fast_ma"]
+        slow_col = params["slow_ma"]
+
+        # -- Edge case: no data -------------------------------------------------
+        if df is None or len(df) == 0:
+            price = info.get("current_price") if info else None
+            return LiveSignal(
+                action="hold",
+                current_price=price,
+                reason="无历史数据，无法生成均线信号",
+                urgency_level="low",
+                current_zone="无数据",
+            )
+
+        df = df.sort_values("date", ascending=True).reset_index(drop=True)
+        last = df.iloc[-1]
+
+        # -- Edge case: missing MA columns -------------------------------------
+        if fast_col not in df.columns or slow_col not in df.columns:
+            price = info.get("current_price") if info else float(last.get("close", 0))
+            return LiveSignal(
+                action="hold",
+                current_price=price,
+                reason=f"缺少均线列 {fast_col} 或 {slow_col}，无法计算交叉信号",
+                urgency_level="low",
+                current_zone="数据缺失",
+            )
+
+        fast_now = last[fast_col]
+        slow_now = last[slow_col]
+
+        # Previous bar values for crossover detection
+        if len(df) >= 2:
+            prev = df.iloc[-2]
+            fast_prev = prev[fast_col]
+            slow_prev = prev[slow_col]
+        else:
+            fast_prev = None
+            slow_prev = None
+
+        # -- Determine action / zone / urgency ---------------------------------
+        if pd.notna(fast_now) and pd.notna(slow_now):
+            if fast_now > slow_now:
+                if (
+                    fast_prev is not None
+                    and slow_prev is not None
+                    and pd.notna(fast_prev)
+                    and pd.notna(slow_prev)
+                    and fast_prev <= slow_prev
+                ):
+                    action = "buy"
+                    zone = "金叉买入"
+                    urgency = "high"
+                else:
+                    action = "hold"
+                    zone = "多头排列"
+                    urgency = "low"
+            elif fast_now < slow_now:
+                if (
+                    fast_prev is not None
+                    and slow_prev is not None
+                    and pd.notna(fast_prev)
+                    and pd.notna(slow_prev)
+                    and fast_prev >= slow_prev
+                ):
+                    action = "sell"
+                    zone = "死叉卖出"
+                    urgency = "high"
+                else:
+                    action = "hold"
+                    zone = "空头排列"
+                    urgency = "low"
+            else:
+                action = "hold"
+                zone = "均线粘合"
+                urgency = "low"
+        else:
+            action = "hold"
+            zone = "数据缺失"
+            urgency = "low"
+
+        # -- Build descriptions -------------------------------------------------
+        trigger_description = (
+            f"{fast_col.upper()}={fast_now:.3f} vs "
+            f"{slow_col.upper()}={slow_now:.3f}"
+        )
+
+        if zone == "金叉买入":
+            reason = (
+                f"{fast_col.upper()}上穿{slow_col.upper()}，"
+                f"短期趋势转强，建议买入"
+            )
+        elif zone == "死叉卖出":
+            reason = (
+                f"{fast_col.upper()}下穿{slow_col.upper()}，"
+                f"短期趋势转弱，建议卖出"
+            )
+        elif zone == "多头排列":
+            reason = (
+                f"{fast_col.upper()}持续高于{slow_col.upper()}，"
+                f"多头趋势延续，宜持仓不动"
+            )
+        elif zone == "空头排列":
+            reason = (
+                f"{fast_col.upper()}持续低于{slow_col.upper()}，"
+                f"空头趋势延续，宜观望等待"
+            )
+        else:
+            reason = f"{fast_col.upper()}与{slow_col.upper()}接近，方向不明"
+
+        current_price = (
+            info.get("current_price")
+            if info and info.get("current_price")
+            else float(last.get("close", 0))
+        )
+
+        return LiveSignal(
+            action=action,
+            current_price=current_price,
+            trigger_description=trigger_description,
+            reason=reason,
+            urgency_level=urgency,
+            current_zone=zone,
+        )
+
+    # ------------------------------------------------------------------
+    # Dashboard cards for UI rendering
+    # ------------------------------------------------------------------
+
+    def get_dashboard_cards(
+        self, df: pd.DataFrame, info: dict, **kwargs
+    ) -> list[DashboardCard]:
+        """Return three info cards summarising the current MA state.
+
+        Cards:
+        1. 均线状态 — metric: fast/slow values + direction arrow
+        2. 趋势区间 — info: zone name + strength
+        3. 均线间距 — metric: gap percentage
+        """
+        params = {**self.get_default_params(), **kwargs}
+        fast_col = params["fast_ma"]
+        slow_col = params["slow_ma"]
+
+        # -- Edge case: no data -------------------------------------------------
+        if df is None or len(df) == 0:
+            return [
+                DashboardCard(
+                    card_id=f"{self.name}_ma_status",
+                    title="均线状态",
+                    card_type="metric",
+                    content={"value": "无数据", "trend": "—"},
+                    priority=1,
+                ),
+                DashboardCard(
+                    card_id=f"{self.name}_trend_zone",
+                    title="趋势区间",
+                    card_type="info",
+                    content={"zone": "无数据", "strength": "—"},
+                    priority=2,
+                ),
+                DashboardCard(
+                    card_id=f"{self.name}_ma_gap",
+                    title="均线间距",
+                    card_type="metric",
+                    content={"value": "—", "gap_pct": None},
+                    priority=2,
+                ),
+            ]
+
+        df = df.sort_values("date", ascending=True).reset_index(drop=True)
+        last = df.iloc[-1]
+
+        fast_val = last.get(fast_col) if fast_col in df.columns else None
+        slow_val = last.get(slow_col) if slow_col in df.columns else None
+
+        # -- Edge case: missing MA columns -------------------------------------
+        if not pd.notna(fast_val) or not pd.notna(slow_val):
+            return [
+                DashboardCard(
+                    card_id=f"{self.name}_ma_status",
+                    title="均线状态",
+                    card_type="metric",
+                    content={"value": "数据缺失", "trend": "—"},
+                    priority=1,
+                ),
+                DashboardCard(
+                    card_id=f"{self.name}_trend_zone",
+                    title="趋势区间",
+                    card_type="info",
+                    content={"zone": "数据不足", "strength": "—"},
+                    priority=2,
+                ),
+                DashboardCard(
+                    card_id=f"{self.name}_ma_gap",
+                    title="均线间距",
+                    card_type="metric",
+                    content={"value": "—", "gap_pct": None},
+                    priority=2,
+                ),
+            ]
+
+        # -- Determine trend state -----------------------------------------------
+        if fast_val > slow_val:
+            direction = "↑"
+            trend = "多头"
+            zone_name = "多头排列"
+            strength = "偏多"
+        elif fast_val < slow_val:
+            direction = "↓"
+            trend = "空头"
+            zone_name = "空头排列"
+            strength = "偏空"
+        else:
+            direction = "→"
+            trend = "粘合"
+            zone_name = "均线粘合"
+            strength = "中性"
+
+        gap_pct = (
+            (fast_val - slow_val) / slow_val * 100 if slow_val != 0 else 0.0
+        )
+
+        card_ma_status = DashboardCard(
+            card_id=f"{self.name}_ma_status",
+            title="均线状态",
+            card_type="metric",
+            content={
+                "fast_label": fast_col.upper(),
+                "fast_value": round(float(fast_val), 3),
+                "slow_label": slow_col.upper(),
+                "slow_value": round(float(slow_val), 3),
+                "direction": direction,
+                "trend": trend,
+            },
+            priority=1,
+        )
+
+        card_trend_zone = DashboardCard(
+            card_id=f"{self.name}_trend_zone",
+            title="趋势区间",
+            card_type="info",
+            content={
+                "zone": zone_name,
+                "strength": strength,
+                "fast_col": fast_col.upper(),
+                "slow_col": slow_col.upper(),
+                "fast_val": round(float(fast_val), 3),
+                "slow_val": round(float(slow_val), 3),
+            },
+            priority=2,
+        )
+
+        card_ma_gap = DashboardCard(
+            card_id=f"{self.name}_ma_gap",
+            title="均线间距",
+            card_type="metric",
+            content={
+                "value": f"{gap_pct:+.2f}%",
+                "gap_pct": round(float(gap_pct), 2),
+                "description": (
+                    f"{fast_col.upper()} 相对 {slow_col.upper()} 的偏离幅度"
+                ),
+            },
+            priority=2,
+        )
+
+        return [card_ma_status, card_trend_zone, card_ma_gap]

@@ -7,27 +7,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
-from src.engine.backtest import BacktestEngine
-from src.engine.broker import Broker
-from src.engine.risk import RiskManager
-from src.strategy.trend_following import TrendFollowingStrategy
-from src.strategy.grid_trading import GridTradingStrategy
-from src.strategy.value_averaging import ValueAveragingStrategy
-from src.strategy.hybrid import HybridStrategy
 from src.engine.metrics import compute_drawdown_series
 from src.ui.terminal_theme import (
     PRIMARY, SUCCESS, DANGER, WARNING, NEUTRAL, DARK, BG_CARD, BORDER,
     CHART_COLORS, FONT, apply_chart_theme,
 )
-
-
-STRATEGIES = [
-    TrendFollowingStrategy(),
-    GridTradingStrategy(),
-    ValueAveragingStrategy(),
-    HybridStrategy(),
-]
-STRATEGY_MAP = {s.name: s for s in STRATEGIES}
 
 
 # ---------------------------------------------------------------------------
@@ -176,73 +160,5 @@ def _render_comparison(results: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Main renderer
+# (render_strategy_page has moved to app.py — the strategy-centric layout)
 # ---------------------------------------------------------------------------
-
-def render_strategy_page(df: pd.DataFrame, info: dict) -> None:
-    if df.empty:
-        st.warning("暂无历史数据，请先获取行情数据")
-        return
-
-    pe_value = info.get("pe_ttm") or info.get("pe_static")
-
-    # Strategy selection in sidebar
-    st.sidebar.divider()
-    st.sidebar.subheader("策略选择")
-    strategy_names = [s.name for s in STRATEGIES]
-    selected_name = st.sidebar.radio("选择策略", strategy_names, index=2)
-    strategy = STRATEGY_MAP[selected_name]
-    compare_mode = st.sidebar.checkbox("四策略对比")
-
-    with st.expander(f"{strategy.name} — 策略说明", expanded=False):
-        st.write(strategy.description)
-
-    if selected_name in ("估值定投", "网格+定投"):
-        if pe_value is None:
-            st.warning("当前 ETF 无 PE(TTM) 数据，将使用基准金额（1倍）执行。")
-        else:
-            st.info(f"当前 PE(TTM): {pe_value:.1f} | 基于当前PE快照，非历史PE分位，仅供参考。")
-
-    st.sidebar.subheader("参数配置")
-    if compare_mode:
-        st.sidebar.caption("对比模式使用默认参数")
-        params = {}
-    else:
-        params = _render_param_form(strategy, prefix="s")
-
-    if st.sidebar.button("▶ 开始回测", type="primary", use_container_width=True):
-        with st.spinner("正在运行回测..."):
-            engine = BacktestEngine(initial_capital=100_000, broker=Broker(), risk_manager=RiskManager())
-
-            if compare_mode:
-                results = []
-                for s in STRATEGIES:
-                    sp = s.get_default_params()
-                    r = engine.run(df.copy(), s, pe_value=pe_value, **sp)
-                    results.append(r)
-                _render_comparison(results)
-            else:
-                result = engine.run(df.copy(), strategy, pe_value=pe_value, **params)
-
-                st.subheader("绩效指标")
-                _render_metrics(result)
-
-                st.divider()
-                t1, t2 = st.tabs(["净值曲线", "交易明细"])
-                with t1:
-                    _render_equity_chart(result, title=strategy.name)
-                with t2:
-                    st.caption(f"共 {result.total_trades} 笔交易")
-                    _render_trade_table(result)
-
-                if selected_name in ("网格交易", "网格+定投"):
-                    grid_p = params if params else strategy.get_default_params()
-                    step = grid_p.get("position_per_grid_pct", 0.08)
-                    price = info.get("current_price", 10)
-                    rm = RiskManager()
-                    should, msg = rm.check_step_size(step * price, price)
-                    if should: st.warning(msg)
-
-                st.caption(result.summary())
-    else:
-        st.info("👈 在左侧配置参数后点击「开始回测」")
