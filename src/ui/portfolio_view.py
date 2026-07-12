@@ -239,9 +239,9 @@ def render_portfolio_details(pm: PortfolioManager) -> None:
 
             styled = df.style
             if "盈亏%" in df.columns:
-                styled = styled.map(_pnl_color, subset=["盈亏%"])
+                styled = styled.applymap(_pnl_color, subset=["盈亏%"])
             if "浮动盈亏" in df.columns:
-                styled = styled.map(_pnl_color, subset=["浮动盈亏"])
+                styled = styled.applymap(_pnl_color, subset=["浮动盈亏"])
 
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:

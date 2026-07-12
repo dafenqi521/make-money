@@ -556,7 +556,7 @@ def _render_screener_table(df: pd.DataFrame) -> None:
                 return f"color: {WARNING}; font-weight: 600;"
             else:
                 return f"color: {NEUTRAL};"
-        styled = display_df.style.map(_score_color, subset=["评分"])
+        styled = display_df.style.applymap(_score_color, subset=["评分"])
     else:
         styled = display_df.style
 
