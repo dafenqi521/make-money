@@ -270,7 +270,7 @@ def render_portfolio_setup() -> float:
     capital = st.number_input(
         "初始资金 (元)",
         min_value=1000.0, max_value=10_000_000.0,
-        value=100_000.0, step=10000.0,
+        value=4_000.0, step=500.0,
         key="portfolio_initial_capital",
     )
     if st.button("💰 创建模拟账户", type="primary", use_container_width=True):
