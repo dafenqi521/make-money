@@ -486,10 +486,14 @@ if strategy.name == "短线动量" and not _selected_from_dashboard and (not sym
                          delta=f"{pnl/4000:+.1%}" if pnl != 0 else None)
 
         # ── Get detailed signals ──
-        dash = _auto_trader.get_dashboard_signals()
+        try:
+            dash = _auto_trader.get_dashboard_signals()
+        except Exception as e:
+            st.warning(f"⚠️ 获取交易信号失败，请稍后刷新。详情：{e}")
+            dash = {"positions": {}, "watchlist": {}}
 
         # ── Current positions (with exit advice) ──
-        if dash["positions"]:
+        if dash.get("positions"):
             st.subheader("📌 当前持仓")
             for code, ps in dash["positions"].items():
                 action = ps["action"]

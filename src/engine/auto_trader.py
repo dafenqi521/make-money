@@ -217,15 +217,18 @@ class AutoTrader:
 
     def _save_params(self, params: dict | None = None):
         """Save current params to JSON file."""
-        p = params or self._params
-        data = {
-            "strategy_params": dict(p),
-            "refine_interval": self._refine_interval,
-            "auto_refine": self._auto_refine,
-            "last_refine_count": self._last_refine_count,
-        }
-        with open(_PARAMS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            p = params or self._params
+            data = {
+                "strategy_params": dict(p),
+                "refine_interval": self._refine_interval,
+                "auto_refine": self._auto_refine,
+                "last_refine_count": self._last_refine_count,
+            }
+            with open(_PARAMS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self._log.warning(f"保存参数文件失败 (非致命): {e}")
 
     # ------------------------------------------------------------------
     # Data fetching
@@ -791,56 +794,63 @@ class AutoTrader:
         Called by the Streamlit UI between scan cycles. Returns a dict with:
           - positions: {code: {action, reason, price, pnl_pct, ...}}
           - watchlist: {code: {action, reason, price, ...}}
+          - error: str | None  (set when the method itself failed)
         """
-        result: dict = {"positions": {}, "watchlist": {}}
+        result: dict = {"positions": {}, "watchlist": {}, "error": None}
 
-        # ── Position signals ──
-        for code, holding in self._pm.holdings.items():
-            if holding.shares <= 0:
-                continue
+        try:
+            # ── Position signals ──
+            for code, holding in self._pm.holdings.items():
+                if holding.shares <= 0:
+                    continue
 
-            # Compute unrealized P&L
-            last_price = None
-            for t in reversed(self._pm.trades):
-                if t.code == code:
-                    last_price = t.price
-                    break
+                # Compute unrealized P&L
+                last_price = None
+                for t in reversed(self._pm.trades):
+                    if t.code == code:
+                        last_price = t.price
+                        break
 
-            pnl_pct = None
-            if last_price and holding.avg_cost:
-                pnl_pct = (last_price / holding.avg_cost) - 1
+                pnl_pct = None
+                if last_price and holding.avg_cost:
+                    pnl_pct = (last_price / holding.avg_cost) - 1
 
-            # Try cached signal, fallback to basic hold status
-            cached = self._position_signals.get(code, {})
-            result["positions"][code] = {
-                "name": holding.name or code,
-                "shares": holding.shares,
-                "avg_cost": holding.avg_cost,
-                "current_price": last_price,
-                "pnl_pct": pnl_pct,
-                "action": cached.get("action", "hold"),
-                "reason": cached.get("reason", "继续持有"),
-                "suggested_price_low": cached.get("suggested_price_low"),
-                "suggested_price_high": cached.get("suggested_price_high"),
-            }
+                # Try cached signal, fallback to basic hold status
+                cached = self._position_signals.get(code, {})
+                result["positions"][code] = {
+                    "name": holding.name or code,
+                    "shares": holding.shares,
+                    "avg_cost": holding.avg_cost,
+                    "current_price": last_price,
+                    "pnl_pct": pnl_pct,
+                    "action": cached.get("action", "hold"),
+                    "reason": cached.get("reason", "继续持有"),
+                    "suggested_price_low": cached.get("suggested_price_low"),
+                    "suggested_price_high": cached.get("suggested_price_high"),
+                }
+        except Exception as e:
+            self._log.error(f"get_dashboard_signals(positions) 异常: {e}")
 
-        # ── Watchlist signals ──
-        pool = self.strategy.get_candidate_pool("etf")
-        name_map = {e["code"]: e.get("name", "") for e in pool}
+        try:
+            # ── Watchlist signals ──
+            pool = self.strategy.get_candidate_pool("etf")
+            name_map = {e["code"]: e.get("name", "") for e in pool}
 
-        for code in self._watchlist:
-            if code in self._pm.holdings:
-                continue
-            cached = self._watchlist_signals.get(code, {})
-            result["watchlist"][code] = {
-                "name": name_map.get(code, code),
-                "current_price": cached.get("current_price"),
-                "action": cached.get("action", "wait"),
-                "reason": cached.get("reason", "等待信号..."),
-                "score": cached.get("score"),
-                "suggested_price_low": cached.get("suggested_price_low"),
-                "suggested_price_high": cached.get("suggested_price_high"),
-            }
+            for code in self._watchlist:
+                if code in self._pm.holdings:
+                    continue
+                cached = self._watchlist_signals.get(code, {})
+                result["watchlist"][code] = {
+                    "name": name_map.get(code, code),
+                    "current_price": cached.get("current_price"),
+                    "action": cached.get("action", "wait"),
+                    "reason": cached.get("reason", "等待信号..."),
+                    "score": cached.get("score"),
+                    "suggested_price_low": cached.get("suggested_price_low"),
+                    "suggested_price_high": cached.get("suggested_price_high"),
+                }
+        except Exception as e:
+            self._log.error(f"get_dashboard_signals(watchlist) 异常: {e}")
 
         return result
 
