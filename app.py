@@ -69,16 +69,18 @@ def _cached_macro_pulse() -> MacroPulse | None:
 
 _macro_pulse = _cached_macro_pulse()
 
-# ── Auto Trader — background thread, starts on app load ─────────────
-@st.cache_resource(show_spinner=False)
-def _get_auto_trader():
-    """Singleton auto-trader that runs in a daemon thread."""
+# ── Auto Trader — background thread, reused across reruns ───────────
+# Uses st.session_state instead of st.cache_resource so the cached
+# object is replaced on code redeploy (cache_resource persists stale
+# objects across code pulls on Streamlit Cloud).
+from src.engine.auto_trader import AutoTrader as _AutoTrader
+
+if "_auto_trader" not in st.session_state:
     import threading
     import time as _time
     from datetime import datetime as _dt
-    from src.engine.auto_trader import AutoTrader
 
-    trader = AutoTrader(initial_capital=4000)
+    trader = _AutoTrader(initial_capital=4000)
     status = {
         "running": True,
         "last_result": None,
@@ -118,10 +120,11 @@ def _get_auto_trader():
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
-    return trader, status
+    st.session_state["_auto_trader"] = trader
+    st.session_state["_auto_status"] = status
 
-
-_auto_trader, _auto_status = _get_auto_trader()
+_auto_trader = st.session_state["_auto_trader"]
+_auto_status = st.session_state["_auto_status"]
 
 # ── Sidebar ──────────────────────────────────────────────────────
 with st.sidebar:
