@@ -69,6 +69,60 @@ def _cached_macro_pulse() -> MacroPulse | None:
 
 _macro_pulse = _cached_macro_pulse()
 
+# ── Auto Trader — background thread, starts on app load ─────────────
+@st.cache_resource(show_spinner=False)
+def _get_auto_trader():
+    """Singleton auto-trader that runs in a daemon thread."""
+    import threading
+    import time as _time
+    from datetime import datetime as _dt
+    from src.engine.auto_trader import AutoTrader
+
+    trader = AutoTrader(initial_capital=4000)
+    status = {
+        "running": True,
+        "last_result": None,
+        "last_error": None,
+        "log_lines": [],
+        "started_at": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    def _loop():
+        while True:
+            try:
+                if not trader.is_market_open():
+                    wait = trader.seconds_until_next_open()
+                    if wait > 300:
+                        status["log_lines"].append(
+                            f"⏰ 休市，{wait/3600:.1f}h 后恢复"
+                        )
+                    _time.sleep(min(wait, 3600))
+                    continue
+
+                result = trader.run_once()
+                status["last_result"] = result
+
+                ts = result["timestamp"][11:19]
+                trades = f"卖{result['exits_triggered']}买{result['entries_executed']}"
+                msg = f"{ts} | {trades} | 权益¥{result['equity']:,.0f} | 持仓{result['positions']}"
+                status["log_lines"].append(msg)
+
+                # Keep last 50 lines
+                if len(status["log_lines"]) > 50:
+                    status["log_lines"] = status["log_lines"][-50:]
+
+                _time.sleep(180)  # 3 min between scans
+            except Exception as e:
+                status["last_error"] = str(e)
+                _time.sleep(60)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    return trader, status
+
+
+_auto_trader, _auto_status = _get_auto_trader()
+
 # ── Sidebar ──────────────────────────────────────────────────────
 with st.sidebar:
     # 1. Title
@@ -363,6 +417,34 @@ with st.sidebar:
 
     # 8.5. Notification settings
     render_notify_settings()
+
+    # 8.6. Auto-trader status (always visible)
+    st.divider()
+    with st.expander("🤖 自动交易状态", expanded=True):
+        if _auto_status["last_result"] is not None:
+            last = _auto_status["last_result"]
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric("💰 权益", f"¥{last['equity']:,.2f}")
+            with col_b:
+                st.metric("💵 现金", f"¥{last['cash']:,.2f}")
+
+            st.caption(
+                f"📊 持仓 {last['positions']} 个 | "
+                f"最近扫描 {last['scanned']} 个标的 | "
+                f"{last['timestamp'][11:19]}"
+            )
+        else:
+            st.caption("⏳ 等待首次扫描...")
+
+        # Last 5 log lines
+        if _auto_status["log_lines"]:
+            st.caption("---")
+            for line in _auto_status["log_lines"][-5:]:
+                st.caption(f"• {line}")
+
+        if _auto_status.get("last_error"):
+            st.error(f"⚠️ {_auto_status['last_error']}")
 
     # 9. Footer
     st.divider()
