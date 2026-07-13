@@ -98,6 +98,10 @@ class AutoTrader:
         self._full_scan_am_done: bool = False
         self._full_scan_midday_done: bool = False
 
+        # ── Dashboard signal cache (reads by Streamlit UI) ──
+        self._position_signals: dict = {}   # {code: {action, reason, price, ...}}
+        self._watchlist_signals: dict = {}  # {code: {action, reason, price, score, ...}}
+
         # ── Load or create portfolio ──
         self._db = PortfolioDB()
         pm = self._db.load()
@@ -393,6 +397,15 @@ class AutoTrader:
                 self._log.error(f"get_live_signal({code}) 异常: {e}")
                 continue
 
+            # ── Cache signal for dashboard ──
+            self._position_signals[code] = {
+                "action": signal.action,
+                "reason": signal.trigger_description or signal.reason,
+                "current_price": current_price,
+                "suggested_price_low": getattr(signal, "suggested_price_low", None),
+                "suggested_price_high": getattr(signal, "suggested_price_high", None),
+            }
+
             if signal.action == "sell":
                 result["signals_found"] += 1
                 if dry_run:
@@ -447,6 +460,20 @@ class AutoTrader:
                 c["code"] for c in candidates
                 if c.get("passed") and c["code"] not in self._pm.holdings
             ][:watchlist_size]
+
+            # ── Cache candidate signals for dashboard ──
+            for c in candidates:
+                code = c["code"]
+                if code in self._watchlist or code in self._pm.holdings:
+                    self._watchlist_signals[code] = {
+                        "action": "buy" if c.get("passed") else "wait",
+                        "reason": c.get("action_detail", "") if c.get("passed") else "未通过筛选",
+                        "current_price": c.get("current_price"),
+                        "suggested_price_low": c.get("current_price", 0) * 0.99 if c.get("current_price") else None,
+                        "suggested_price_high": c.get("current_price", 0) * 1.01 if c.get("current_price") else None,
+                        "score": c.get("score"),
+                    }
+
             if self._watchlist:
                 self._log.info(
                     f"候选池: {', '.join(self._watchlist)}"
@@ -611,6 +638,15 @@ class AutoTrader:
                 self._log.error(f"get_live_signal({code}) 异常: {e}")
                 continue
 
+            # ── Cache signal for dashboard ──
+            self._position_signals[code] = {
+                "action": signal.action,
+                "reason": signal.trigger_description or signal.reason,
+                "current_price": current_price,
+                "suggested_price_low": getattr(signal, "suggested_price_low", None),
+                "suggested_price_high": getattr(signal, "suggested_price_high", None),
+            }
+
             if signal.action == "sell":
                 result["signals_found"] += 1
                 if dry_run:
@@ -683,6 +719,16 @@ class AutoTrader:
                     self._log.error(f"get_live_signal({code}) 快速扫描异常: {e}")
                     continue
 
+                # ── Cache signal for dashboard ──
+                self._watchlist_signals[code] = {
+                    "action": signal.action,
+                    "reason": signal.trigger_description or signal.reason,
+                    "current_price": cp,
+                    "suggested_price_low": getattr(signal, "suggested_price_low", None),
+                    "suggested_price_high": getattr(signal, "suggested_price_high", None),
+                    "score": None,
+                }
+
                 if signal.action != "buy":
                     # Not ready yet — stays on watchlist
                     continue
@@ -732,6 +778,69 @@ class AutoTrader:
             result["equity"] = self._pm.summary().get("total_equity", 0)
             result["cash"] = self._pm.cash
             result["positions"] = len(self._pm.holdings)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Dashboard data
+    # ------------------------------------------------------------------
+
+    def get_dashboard_signals(self, info_map: dict | None = None) -> dict:
+        """Return cached signal data for positions + watchlist.
+
+        Called by the Streamlit UI between scan cycles. Returns a dict with:
+          - positions: {code: {action, reason, price, pnl_pct, ...}}
+          - watchlist: {code: {action, reason, price, ...}}
+        """
+        result: dict = {"positions": {}, "watchlist": {}}
+
+        # ── Position signals ──
+        for code, holding in self._pm.holdings.items():
+            if holding.shares <= 0:
+                continue
+
+            # Compute unrealized P&L
+            last_price = None
+            for t in reversed(self._pm.trades):
+                if t.code == code:
+                    last_price = t.price
+                    break
+
+            pnl_pct = None
+            if last_price and holding.avg_cost:
+                pnl_pct = (last_price / holding.avg_cost) - 1
+
+            # Try cached signal, fallback to basic hold status
+            cached = self._position_signals.get(code, {})
+            result["positions"][code] = {
+                "name": holding.name or code,
+                "shares": holding.shares,
+                "avg_cost": holding.avg_cost,
+                "current_price": last_price,
+                "pnl_pct": pnl_pct,
+                "action": cached.get("action", "hold"),
+                "reason": cached.get("reason", "继续持有"),
+                "suggested_price_low": cached.get("suggested_price_low"),
+                "suggested_price_high": cached.get("suggested_price_high"),
+            }
+
+        # ── Watchlist signals ──
+        pool = self.strategy.get_candidate_pool("etf")
+        name_map = {e["code"]: e.get("name", "") for e in pool}
+
+        for code in self._watchlist:
+            if code in self._pm.holdings:
+                continue
+            cached = self._watchlist_signals.get(code, {})
+            result["watchlist"][code] = {
+                "name": name_map.get(code, code),
+                "current_price": cached.get("current_price"),
+                "action": cached.get("action", "wait"),
+                "reason": cached.get("reason", "等待信号..."),
+                "score": cached.get("score"),
+                "suggested_price_low": cached.get("suggested_price_low"),
+                "suggested_price_high": cached.get("suggested_price_high"),
+            }
 
         return result
 

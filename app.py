@@ -463,6 +463,134 @@ if run_screener or (not symbol and st.session_state.get("screener_results") is N
 
 # ── ETF Dashboard section ────────────────────────────────────────
 
+# --- 短线动量 Auto-Trader Dashboard (default landing page) ---
+_selected_from_dashboard = st.session_state.pop("_at_select_code", "")
+
+if strategy.name == "短线动量" and not _selected_from_dashboard and (not symbol or len(symbol) != 6 or st.session_state.get("_at_show_dashboard", True)):
+    if st.session_state.get("_at_show_dashboard", True):
+        st.header("🤖 自动交易 · 实时看板")
+
+        # ── Portfolio overview ──
+        last = _auto_status["last_result"]
+        if last is not None:
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.metric("💰 总权益", f"¥{last['equity']:,.2f}")
+            with c2:
+                st.metric("💵 可用现金", f"¥{last['cash']:,.2f}")
+            with c3:
+                st.metric("📊 持仓数", f"{last['positions']} 个")
+            with c4:
+                pnl = last['equity'] - 4000
+                st.metric("📈 浮动盈亏", f"¥{pnl:+,.2f}",
+                         delta=f"{pnl/4000:+.1%}" if pnl != 0 else None)
+
+        # ── Get detailed signals ──
+        dash = _auto_trader.get_dashboard_signals()
+
+        # ── Current positions (with exit advice) ──
+        if dash["positions"]:
+            st.subheader("📌 当前持仓")
+            for code, ps in dash["positions"].items():
+                action = ps["action"]
+                action_color = {
+                    "sell": ("🔴 建议卖出", "#dc2626"),
+                    "hold": ("🟡 继续持有", "#f59e0b"),
+                }.get(action, ("⚪ 等待", "#64748b"))
+
+                with st.container(border=True):
+                    c1, c2, c3, c4 = st.columns([2, 2, 2, 1.5])
+                    with c1:
+                        st.markdown(f"**{code}** {ps['name']}")
+                        pnl_str = f"{ps['pnl_pct']:+.2%}" if ps['pnl_pct'] is not None else "—"
+                        pnl_color = "#16a34a" if (ps['pnl_pct'] or 0) >= 0 else "#dc2626"
+                        st.markdown(
+                            f"现价 ¥{ps['current_price']:.3f} | "
+                            f"成本 ¥{ps['avg_cost']:.3f} | "
+                            f"<span style='color:{pnl_color};font-weight:600;'>{pnl_str}</span>",
+                            unsafe_allow_html=True,
+                        )
+                    with c2:
+                        st.markdown(
+                            f"<span style='color:{action_color[1]};font-weight:600;'>{action_color[0]}</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(ps["reason"][:80])
+                    with c3:
+                        if ps.get("suggested_price_low") and ps.get("suggested_price_high"):
+                            st.caption(
+                                f"💰 建议卖出价：¥{ps['suggested_price_low']:.3f} ~ ¥{ps['suggested_price_high']:.3f}"
+                            )
+                        st.caption(f"📦 建议卖出：100 股 ≈ ¥{ps['current_price'] * 100:,.0f}" if ps['current_price'] else "—")
+                    with c4:
+                        if st.button(f"📊 详情", key=f"_pos_{code}", use_container_width=True):
+                            st.session_state["_at_select_code"] = code
+                            st.session_state["_at_show_dashboard"] = False
+                            st.rerun()
+        else:
+            st.info("📭 暂无持仓，等待买入信号...")
+
+        # ── Watchlist ranking (with entry advice) ──
+        if dash["watchlist"]:
+            st.subheader("🎯 候选池 Top 5")
+            st.caption("开盘和午休各刷新。前日涨幅≥1.5% + 量能确认 + MA20上方 — 按综合评分排列。")
+
+            for code, ws in dash["watchlist"].items():
+                action = ws["action"]
+                if action == "buy":
+                    action_label = "🟢 建议买入"
+                    action_clr = "#16a34a"
+                elif action == "wait":
+                    action_label = "⏳ 等待信号"
+                    action_clr = "#64748b"
+                else:
+                    action_label = f"⚪ {action}"
+                    action_clr = "#94a3b8"
+
+                score_str = f"评分 {ws['score']:.0f}" if ws.get("score") is not None else ""
+
+                with st.container(border=True):
+                    c1, c2, c3, c4 = st.columns([2, 2, 2, 1.5])
+                    with c1:
+                        st.markdown(f"**{code}** {ws['name']}")
+                        price_str = f"¥{ws['current_price']:.3f}" if ws.get("current_price") else "—"
+                        st.caption(f"现价 {price_str} | {score_str}")
+                    with c2:
+                        st.markdown(
+                            f"<span style='color:{action_clr};font-weight:600;'>{action_label}</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(ws["reason"][:80] if ws.get("reason") else "")
+                    with c3:
+                        if ws.get("suggested_price_low") and ws.get("suggested_price_high"):
+                            st.caption(
+                                f"💰 建议买入价：¥{ws['suggested_price_low']:.3f} ~ ¥{ws['suggested_price_high']:.3f}"
+                            )
+                        if ws.get("current_price"):
+                            st.caption(f"📦 建议买入：100 股 ≈ ¥{ws['current_price'] * 100:,.0f}")
+                    with c4:
+                        if st.button(f"🔍 分析", key=f"_wl_{code}", use_container_width=True):
+                            st.session_state["_at_select_code"] = code
+                            st.session_state["_at_show_dashboard"] = False
+                            st.rerun()
+        else:
+            st.info("🎯 候选池：等待完整扫描（开盘/午休各一次）...")
+
+        # ── Recent logs ──
+        if _auto_status["log_lines"]:
+            with st.expander("📋 最近日志", expanded=False):
+                for line in _auto_status["log_lines"][-10:]:
+                    st.caption(f"• {line}")
+
+        st.divider()
+        st.caption("💡 在侧边栏输入ETF代码可查看任意基金详情")
+        st.stop()
+
+# If coming from dashboard with a selected code, use it
+if _selected_from_dashboard:
+    symbol = _selected_from_dashboard
+    st.session_state["_at_show_dashboard"] = False
+
 # --- 4% Fast Band: show Top 5 ranking when no ETF selected ---
 if strategy.name == "快速波段" and (not symbol or len(symbol) != 6):
     st.header("⚡ 快速波段 · 25只宽基全量排名")
@@ -676,6 +804,12 @@ else:
         except Exception as e:
             st.error(f"发生未预期的错误: {e}")
             st.stop()
+
+    # ── Back to dashboard (for 短线动量 auto-trader) ──────────────
+    if strategy.name == "短线动量" and not st.session_state.get("_at_show_dashboard", True):
+        if st.button("← 返回自动交易看板", key="_back_to_dashboard"):
+            st.session_state["_at_show_dashboard"] = True
+            st.rerun()
 
     pe_value = info.get("pe_ttm") or info.get("pe_static")
 
