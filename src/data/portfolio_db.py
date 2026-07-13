@@ -1,12 +1,13 @@
 """SQLite persistence for paper-trading portfolio.
 
-Stores portfolio state (cash, P&L), holdings, and full trade history
-so that positions survive Streamlit server restarts.
+Stores portfolio state (cash, P&L), holdings, full trade history,
+and trade cycle tracking so that positions survive Streamlit server restarts.
 
-Schema (3 tables, auto-created):
+Schema (4 tables, auto-created):
   - portfolio_state: singleton row with cash, P&L, config
   - holdings: one row per ETF position
   - trades: full trade log, append-only
+  - trade_cycles: buy→sell round-trip tracking for strategy refinement
 
 Usage::
 
@@ -80,6 +81,25 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_pct REAL,
     reason TEXT DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS trade_cycles (
+    cycle_id TEXT PRIMARY KEY,
+    code TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    entry_date TEXT NOT NULL,
+    exit_date TEXT,
+    entry_price REAL NOT NULL,
+    exit_price REAL,
+    shares INTEGER NOT NULL,
+    entry_amount REAL NOT NULL,
+    pnl REAL,
+    pnl_pct REAL,
+    holding_days INTEGER,
+    entry_reason TEXT DEFAULT '',
+    exit_reason TEXT DEFAULT '',
+    is_closed INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
 """
 
 UPSERT_STATE = """
@@ -101,6 +121,51 @@ VALUES (?, ?, ?, ?, ?);
 """
 
 CLEAR_HOLDINGS = "DELETE FROM holdings;"
+
+
+# ── Trade cycle SQL ──
+
+INSERT_CYCLE = """
+INSERT OR IGNORE INTO trade_cycles
+    (cycle_id, code, name, entry_date, entry_price, shares, entry_amount, entry_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+"""
+
+CLOSE_CYCLE = """
+UPDATE trade_cycles SET
+    exit_date = ?, exit_price = ?, pnl = ?, pnl_pct = ?,
+    holding_days = ?, exit_reason = ?, is_closed = 1
+WHERE cycle_id = ?;
+"""
+
+SELECT_OPEN_CYCLES = """
+SELECT * FROM trade_cycles WHERE is_closed = 0 ORDER BY entry_date ASC;
+"""
+
+SELECT_CLOSED_CYCLES = """
+SELECT * FROM trade_cycles WHERE is_closed = 1 ORDER BY entry_date DESC LIMIT ?;
+"""
+
+SELECT_OPEN_CYCLES_FOR_CODE = """
+SELECT * FROM trade_cycles WHERE code = ? AND is_closed = 0 ORDER BY entry_date ASC;
+"""
+
+COUNT_CYCLES = "SELECT COUNT(*) FROM trade_cycles;"
+COUNT_CLOSED_CYCLES = "SELECT COUNT(*) FROM trade_cycles WHERE is_closed = 1;"
+
+
+def _cycle_row_to_dict(row: tuple) -> dict:
+    """Convert a trade_cycles row to a dict for external use."""
+    return {
+        "cycle_id": row[0], "code": row[1], "name": row[2],
+        "entry_date": row[3], "exit_date": row[4],
+        "entry_price": row[5], "exit_price": row[6],
+        "shares": row[7], "entry_amount": row[8],
+        "pnl": row[9], "pnl_pct": row[10],
+        "holding_days": row[11],
+        "entry_reason": row[12] or "", "exit_reason": row[13] or "",
+        "is_closed": bool(row[14]),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +340,7 @@ class PortfolioDB:
         """Drop all tables and re-create them. Returns True on success."""
         try:
             with self._conn() as conn:
+                conn.execute("DROP TABLE IF EXISTS trade_cycles")
                 conn.execute("DROP TABLE IF EXISTS trades")
                 conn.execute("DROP TABLE IF EXISTS holdings")
                 conn.execute("DROP TABLE IF EXISTS portfolio_state")
@@ -283,6 +349,85 @@ class PortfolioDB:
             return True
         except Exception:
             return False
+
+    # ------------------------------------------------------------------
+    # Trade cycles
+    # ------------------------------------------------------------------
+
+    def create_cycle(self, cycle_id: str, code: str, name: str,
+                     entry_date: str, entry_price: float, shares: int,
+                     entry_amount: float, entry_reason: str = "") -> bool:
+        """Create a new open trade cycle from a buy trade."""
+        try:
+            with self._conn() as conn:
+                conn.execute(INSERT_CYCLE, (
+                    cycle_id, code, name, entry_date, entry_price,
+                    shares, entry_amount, entry_reason,
+                ))
+                conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def close_cycle(self, cycle_id: str, exit_date: str, exit_price: float,
+                    pnl: float, pnl_pct: float, holding_days: int,
+                    exit_reason: str = "") -> bool:
+        """Close a trade cycle with sell information."""
+        try:
+            with self._conn() as conn:
+                conn.execute(CLOSE_CYCLE, (
+                    exit_date, exit_price, pnl, pnl_pct,
+                    holding_days, exit_reason, cycle_id,
+                ))
+                conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def get_open_cycles(self) -> list[dict]:
+        """Return all currently open (unclosed) trade cycles."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(SELECT_OPEN_CYCLES).fetchall()
+            return [_cycle_row_to_dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_open_cycles_for_code(self, code: str) -> list[dict]:
+        """Return open cycles for a specific code (FIFO-ordered)."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(SELECT_OPEN_CYCLES_FOR_CODE, (code,)).fetchall()
+            return [_cycle_row_to_dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_closed_cycles(self, limit: int = 100) -> list[dict]:
+        """Return most recent closed cycles."""
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(SELECT_CLOSED_CYCLES, (limit,)).fetchall()
+            return [_cycle_row_to_dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_cycle_count(self) -> int:
+        """Total number of trade cycles."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(COUNT_CYCLES).fetchone()
+                return row[0] if row else 0
+        except Exception:
+            return 0
+
+    def get_closed_cycle_count(self) -> int:
+        """Number of completed trade cycles."""
+        try:
+            with self._conn() as conn:
+                row = conn.execute(COUNT_CLOSED_CYCLES).fetchone()
+                return row[0] if row else 0
+        except Exception:
+            return 0
 
     @property
     def db_path(self) -> str:
