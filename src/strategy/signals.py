@@ -121,11 +121,15 @@ class LiveSignal:
     """
 
     action: str = "hold"
-    # "buy" | "sell" | "hold" | "wait_for_drop" | "wait_for_rise"
+    # "buy" | "sell" | "hold" | "wait_for_strength" | "wait_for_drop" | "wait_for_rise"
 
     current_price: Optional[float] = None
     suggested_shares: int = 0
     suggested_amount: float = 0.0
+
+    # Price range for execution (accounts for latency + bid-ask + short-term noise)
+    suggested_price_low: Optional[float] = None   # 建议买入/卖出价格下限
+    suggested_price_high: Optional[float] = None  # 建议买入/卖出价格上限
 
     trigger_description: str = ""
     # e.g. "已跌破4%触发线" / "均线多头排列" / "PE低估区 → 2倍定投"

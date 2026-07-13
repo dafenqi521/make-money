@@ -88,7 +88,7 @@ with st.sidebar:
     strategy_names = registry.get_names()
     # Default to 短线波段 if available, else 4%定投法, else index 0
     default_idx = 0
-    preferred = ["快速波段", "4%定投法", "短线波段"]
+    preferred = ["短线动量", "快速波段", "4%定投法", "短线波段"]
     for p in preferred:
         if p in strategy_names:
             default_idx = strategy_names.index(p)

@@ -90,7 +90,7 @@ class FastBand4PctStrategy(FourPercentDCAStrategy):
             "total_portions": 3,
             "drop_threshold_pct": 0.02,
             "rise_threshold_pct": 0.02,
-            "portion_amount": 0,        # 0 = auto-calculate from capital
+            "portion_amount": 500,      # ¥500/份（2000元÷3≈667，取整500）
             # PE filter (disabled — pure price mode)
             "use_pe_filter": False,
             "pe_buy_threshold": 15.0,

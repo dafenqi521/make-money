@@ -84,7 +84,7 @@ def render_live_signal(signal: LiveSignal) -> None:
         icon = "🔴"
         action_text = "建议卖出"
         action_color = DANGER
-    elif action in ("wait_for_drop", "wait_for_rise"):
+    elif action in ("wait_for_drop", "wait_for_rise", "wait_for_strength"):
         bg = "#fffbeb"
         border = WARNING
         icon = "🟡"
@@ -128,6 +128,16 @@ def render_live_signal(signal: LiveSignal) -> None:
             f'(约 {signal.suggested_shares} 股)</span>'
         )
 
+    # Price range for execution
+    range_html = ""
+    if signal.suggested_price_low and signal.suggested_price_high:
+        range_html = (
+            f'<span style="font-size:0.85rem; color:{NEUTRAL};">'
+            f'建议价格区间: <b style="color:{DARK};">'
+            f'¥{signal.suggested_price_low:.3f} ~ ¥{signal.suggested_price_high:.3f}</b>'
+            f'（当前价 ¥{signal.current_price:.3f}）</span>'
+        )
+
     st.markdown(
         f'<div style="padding:20px 24px; background:{bg}; '
         f'border:2px solid {border}; border-radius:12px; margin:16px 0;">'
@@ -146,6 +156,8 @@ def render_live_signal(signal: LiveSignal) -> None:
         f'</div>'
         # Suggested amount
         f'<div style="margin-bottom:4px;">{amount_html}</div>'
+        # Price range
+        f'<div style="margin-bottom:4px;">{range_html}</div>'
         # Next trigger
         f'<div style="margin-bottom:4px;">'
         + (f'<span style="font-size:0.85rem; color:{NEUTRAL};">'
@@ -255,6 +267,26 @@ def _render_one_card(card: DashboardCard) -> None:
             st.warning(content.get("message", ""))
 
         elif card_type == "info":
+            # Support plan_html for trade timeline cards
+            plan_html = content.get("plan_html")
+            if plan_html:
+                st.markdown(plan_html, unsafe_allow_html=True)
+
+            # Support price levels (key price ladder)
+            levels = content.get("levels", [])
+            for lv in levels:
+                if isinstance(lv, dict):
+                    st.markdown(
+                        f'<div style="display:flex; justify-content:space-between; '
+                        f'padding:2px 0;">'
+                        f'<span style="font-size:0.75rem; color:{NEUTRAL};">{lv.get("label","")}</span>'
+                        f'<span style="font-size:0.8rem; font-weight:600; '
+                        f'color:{DARK};">{lv.get("price","")} '
+                        f'<small style="color:{NEUTRAL};">{lv.get("pct","")}</small></span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
             items = content.get("items", [])
             for item in items:
                 if isinstance(item, dict):
