@@ -93,6 +93,11 @@ class AutoTrader:
         self._today: str = date.today().isoformat()
         self._last_refine_count = 0
 
+        # ── Two-tier scanning ──
+        self._watchlist: list[str] = []        # Top 5 candidate codes from full scan
+        self._full_scan_am_done: bool = False
+        self._full_scan_midday_done: bool = False
+
         # ── Load or create portfolio ──
         self._db = PortfolioDB()
         pm = self._db.load()
@@ -104,14 +109,12 @@ class AutoTrader:
             self._db.save(pm)
         self._pm = pm
 
+        # ── Strategy & Analyzer (lazy; must exist before _load_params) ──
+        self._strategy = None
+        self._analyzer = None
+
         # ── Load or create params ──
         self._params = self._load_params()
-
-        # ── Strategy (lazy) ──
-        self._strategy = None
-
-        # ── Analyzer (lazy) ──
-        self._analyzer = None
 
         self._log.info(
             f"AutoTrader 就绪 | 资金 ¥{pm.cash:,.0f} | "
@@ -258,13 +261,45 @@ class AutoTrader:
             self._today = today
             self._new_today.clear()
             self._sold_today.clear()
+            self._full_scan_am_done = False
+            self._full_scan_midday_done = False
+            self._watchlist.clear()
+
+    # ------------------------------------------------------------------
+    # Scan scheduling
+    # ------------------------------------------------------------------
+
+    def _needs_full_scan(self) -> bool:
+        """Decide whether a full candidate-pool scan is due.
+
+        Full scan triggers:
+          - First scan of the morning session (>=9:30)
+          - First scan during the midday break (11:30–13:00)
+          - Watchlist is empty (first run ever, or cleared on new day)
+        """
+        if not self._watchlist:
+            return True
+        now = datetime.now().time()
+        if not self._full_scan_am_done and now >= dtime(9, 30):
+            return True
+        if not self._full_scan_midday_done and dtime(11, 30) <= now <= dtime(13, 0):
+            return True
+        return False
+
+    def _mark_full_scan_done(self):
+        """Record that a full scan completed in the current time window."""
+        now = datetime.now().time()
+        if now < dtime(11, 30):
+            self._full_scan_am_done = True
+        else:
+            self._full_scan_midday_done = True
 
     # ------------------------------------------------------------------
     # Core: one scan cycle
     # ------------------------------------------------------------------
 
     def run_once(self, dry_run: bool = False) -> dict:
-        """Execute one scan-and-trade cycle.
+        """Execute one scan-and-trade cycle (dispatches to full or quick scan).
 
         Args:
             dry_run: If True, only scan signals, do NOT execute trades.
@@ -275,6 +310,24 @@ class AutoTrader:
         """
         self._maybe_reset_daily()
 
+        if self._needs_full_scan():
+            self._log.info(
+                f"{'上午' if not self._full_scan_am_done else '午休'}"
+                f"完整扫描 — 全池34只ETF评估"
+            )
+            result = self._do_full_scan(dry_run)
+            self._mark_full_scan_done()
+        else:
+            result = self._do_quick_scan(dry_run)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Full scan
+    # ------------------------------------------------------------------
+
+    def _do_full_scan(self, dry_run: bool = False) -> dict:
+        """Full scan: all 34 ETFs, K-line + scoring, rebuild watchlist."""
         # ── Get candidate pool ──
         pool = self.strategy.get_candidate_pool("etf")
         all_codes = [e["code"] for e in pool]
@@ -350,7 +403,7 @@ class AutoTrader:
                     trade = self._pm.sell(
                         code=code,
                         price=current_price,
-                        shares=signal.suggested_shares or holding.shares,
+                        shares=min(100, holding.shares),
                         name=info.get("name", code),
                         reason=signal.reason,
                     )
@@ -388,6 +441,17 @@ class AutoTrader:
                 self._log.error(f"scan_candidates 异常: {e}")
                 candidates = []
 
+            # ── Build watchlist from top candidates (for quick scans) ──
+            watchlist_size = 5
+            self._watchlist = [
+                c["code"] for c in candidates
+                if c.get("passed") and c["code"] not in self._pm.holdings
+            ][:watchlist_size]
+            if self._watchlist:
+                self._log.info(
+                    f"候选池: {', '.join(self._watchlist)}"
+                )
+
             for cand in candidates:
                 if len(self._new_today) >= max_new_per_day:
                     break
@@ -406,19 +470,8 @@ class AutoTrader:
                 if cp <= 0:
                     continue
 
-                # Position sizing
-                position_pct = float(self._params.get("position_pct", 0.25))
-                budget = self._pm.cash * position_pct / max(1, max_concurrent - current_positions)
-                raw_shares = int(budget / cp)
-                shares = (raw_shares // 100) * 100
-                if shares < 100:
-                    continue
-
-                cost = shares * cp * 1.001  # ~commission
-                if cost > self._pm.cash:
-                    shares = max(100, int(self._pm.cash * 0.95 / cp / 100) * 100)
-                    if shares < 100:
-                        continue
+                # Position sizing — fixed 100 shares
+                shares = 100
 
                 result["signals_found"] += 1
 
@@ -459,6 +512,216 @@ class AutoTrader:
                         self._log.info(
                             f"🟢 买入 {code} {name} {trade.shares}股 @ ¥{cp:.3f} "
                             f"≈ ¥{trade.amount:,.0f} | 评分{cand['score']:.0f}"
+                        )
+                    else:
+                        self._log.warning(f"买入 {code} 失败（资金不足或其他原因）")
+
+        # Final save
+        if not dry_run:
+            self._db.save(self._pm)
+            result["equity"] = self._pm.summary().get("total_equity", 0)
+            result["cash"] = self._pm.cash
+            result["positions"] = len(self._pm.holdings)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Quick scan (held + watchlist only)
+    # ------------------------------------------------------------------
+
+    def _do_quick_scan(self, dry_run: bool = False) -> dict:
+        """Lightweight scan: only held positions + watchlist candidates.
+
+        Still batch-fetches all 34 prices (one HTTP call regardless of count),
+        but only pulls K-line history for the monitored subset.
+        """
+        # ── Monitor set = held codes ∪ watchlist codes ──
+        held_codes = list(self._pm.holdings.keys())
+        monitor_codes = list(set(held_codes) | set(self._watchlist))
+
+        # If nothing to monitor, short-circuit
+        if not monitor_codes:
+            return {
+                "scanned": 0, "signals_found": 0,
+                "exits_triggered": 0, "entries_executed": 0,
+                "equity": self._pm.summary().get("total_equity", 0),
+                "cash": self._pm.cash, "positions": 0,
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        # ── Batch fetch all 34 real-time prices ──
+        pool = self.strategy.get_candidate_pool("etf")
+        all_codes = [e["code"] for e in pool]
+        info_map = self._get_prices_and_info(all_codes)
+
+        # Update portfolio mark-to-market
+        price_map = {
+            code: info.get("current_price", 0)
+            for code, info in info_map.items()
+            if info.get("current_price")
+        }
+        self._pm.update_prices(price_map)
+
+        # ── Pre-fetch K-line for monitor codes only ──
+        for code in monitor_codes:
+            self._get_hist(code)  # daily cache — cold-fetches, rest are no-ops
+
+        result = {
+            "scanned": len(info_map),  # prices fetched for all 34
+            "signals_found": 0,
+            "exits_triggered": 0,
+            "entries_executed": 0,
+            "equity": self._pm.summary().get("total_equity", 0),
+            "cash": self._pm.cash,
+            "positions": len(self._pm.holdings),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # ═════════════════════════════════════════════════════════════
+        # Phase 1: Check exits for held positions (same as full scan)
+        # ═════════════════════════════════════════════════════════════
+        for code, holding in list(self._pm.holdings.items()):
+            if holding.shares <= 0:
+                continue
+
+            info = info_map.get(code)
+            if not info or not info.get("current_price"):
+                continue
+
+            df = self._get_hist(code)
+            if df is None or df.empty:
+                continue
+
+            current_price = info["current_price"]
+
+            pf_ctx = {
+                "has_position": True,
+                "holding_avg_cost": holding.avg_cost,
+                "holding_shares": holding.shares,
+                "available_cash": self._pm.cash,
+                "code": code,
+                "last_buy_date": self._find_last_buy_date(code),
+            }
+
+            try:
+                signal = self.strategy.get_live_signal(
+                    df, info, portfolio_context=pf_ctx, **self._params,
+                )
+            except Exception as e:
+                self._log.error(f"get_live_signal({code}) 异常: {e}")
+                continue
+
+            if signal.action == "sell":
+                result["signals_found"] += 1
+                if dry_run:
+                    self._log.info(
+                        f"[DRY RUN] {code} 卖出信号: {signal.trigger_description}"
+                    )
+                else:
+                    trade = self._pm.sell(
+                        code=code,
+                        price=current_price,
+                        shares=min(100, holding.shares),
+                        name=info.get("name", code),
+                        reason=signal.reason,
+                    )
+                    if trade:
+                        result["exits_triggered"] += 1
+                        self._sold_today.add(code)
+                        self._db.save(self._pm)
+                        self._close_cycle_for_code(code, trade)
+                        self._log.info(
+                            f"🔴 卖出 {code} {trade.shares}股 @ ¥{current_price:.3f} "
+                            f"盈亏 {trade.pnl:+.2f} ({trade.pnl_pct:+.2%}) | "
+                            f"{signal.trigger_description}"
+                        )
+                    else:
+                        self._log.warning(f"卖出 {code} 失败")
+
+        # ═════════════════════════════════════════════════════════════
+        # Phase 2: Check watchlist for entries (one by one via get_live_signal)
+        # ═════════════════════════════════════════════════════════════
+        max_concurrent = int(self._params.get("max_concurrent", 2))
+        max_new_per_day = int(self._params.get("max_new_per_day", 1))
+        current_positions = len(self._pm.holdings)
+
+        if current_positions < max_concurrent and len(self._new_today) < max_new_per_day:
+            for code in list(self._watchlist):  # iterate a copy — may mutate
+                if len(self._new_today) >= max_new_per_day:
+                    break
+                if current_positions >= max_concurrent:
+                    break
+                if code in self._pm.holdings:
+                    continue
+                if code in self._sold_today:
+                    continue
+
+                info = info_map.get(code)
+                if not info or not info.get("current_price"):
+                    continue
+
+                df = self._get_hist(code)
+                if df is None or df.empty:
+                    continue
+
+                cp = info["current_price"]
+                if cp <= 0:
+                    continue
+
+                # Check entry signal via get_live_signal (no position)
+                pf_ctx = {
+                    "has_position": False,
+                    "available_cash": self._pm.cash,
+                    "code": code,
+                }
+
+                try:
+                    signal = self.strategy.get_live_signal(
+                        df, info, portfolio_context=pf_ctx, **self._params,
+                    )
+                except Exception as e:
+                    self._log.error(f"get_live_signal({code}) 快速扫描异常: {e}")
+                    continue
+
+                if signal.action != "buy":
+                    # Not ready yet — stays on watchlist
+                    continue
+
+                # ── Position sizing — fixed 100 shares ──
+                shares = 100
+
+                result["signals_found"] += 1
+
+                if dry_run:
+                    self._log.info(
+                        f"[DRY RUN] {code} {info.get('name', code)} 买入信号: "
+                        f"¥{cp:.3f} × {shares}股 — {signal.trigger_description}"
+                    )
+                else:
+                    name = info.get("name", code)
+                    reason = (
+                        f"🚀 自动买入(快速) | {signal.trigger_description or '动量信号触发'}"
+                    )
+                    trade = self._pm.buy(
+                        code=code, price=cp, shares=shares,
+                        name=name, reason=reason,
+                    )
+                    if trade:
+                        result["entries_executed"] += 1
+                        self._new_today.add(code)
+                        current_positions += 1
+                        self._watchlist.remove(code)
+                        self._db.save(self._pm)
+                        self._db.create_cycle(
+                            cycle_id=str(uuid.uuid4())[:12],
+                            code=code, name=name,
+                            entry_date=trade.date, entry_price=cp,
+                            shares=trade.shares, entry_amount=trade.amount,
+                            entry_reason=reason,
+                        )
+                        self._log.info(
+                            f"🟢 买入 {code} {name} {trade.shares}股 @ ¥{cp:.3f} "
+                            f"≈ ¥{trade.amount:,.0f} | {signal.trigger_description}"
                         )
                     else:
                         self._log.warning(f"买入 {code} 失败（资金不足或其他原因）")
