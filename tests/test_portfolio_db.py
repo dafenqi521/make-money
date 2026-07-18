@@ -1,6 +1,7 @@
 """Tests for SQLite portfolio persistence layer."""
 
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -189,6 +190,47 @@ class TestPortfolioDB:
         """db_path returns the SQLite file path."""
         assert temp_db.db_path.endswith(".sqlite3")
         assert os.path.exists(temp_db.db_path)
+
+    def test_database_url_reopens_the_same_single_account(self, tmp_path):
+        path = tmp_path / "database-url.sqlite3"
+        url = f"sqlite+pysqlite:///{path.as_posix()}"
+        first = PortfolioDB(database_url=url)
+        account = PortfolioManager(initial_capital=88_000)
+        assert first.save(account)
+
+        second = PortfolioDB(database_url=url)
+        restored = second.load()
+
+        assert second.backend == "sqlite"
+        assert restored is not None
+        assert restored.initial_capital == 88_000
+
+    def test_previous_single_account_sqlite_is_migrated(self, tmp_path):
+        path = tmp_path / "legacy.sqlite3"
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE portfolio_state (
+                    id INTEGER PRIMARY KEY,
+                    initial_capital REAL,
+                    cash REAL,
+                    realized_pnl REAL,
+                    commission_rate REAL,
+                    min_commission REAL,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO portfolio_state VALUES (1, 66000, 65000, -1000, 0.0003, 5, '')"
+            )
+            conn.commit()
+
+        migrated = PortfolioDB(db_path=path).load()
+
+        assert migrated is not None
+        assert migrated.initial_capital == 66_000
+        assert migrated.cash == 65_000
 
     def test_holding_risk_state_survives_roundtrip(self, temp_db):
         pm = PortfolioManager(initial_capital=100_000)

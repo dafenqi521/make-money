@@ -24,8 +24,9 @@ python -m streamlit run app.py
 - `src/strategy/etf_rotation.py`：纯选基、配置、仓位和退出逻辑；
 - `src/engine/rotation_scanner.py`：本地候选池数据扫描服务；
 - `src/engine/paper_trading.py`：扫描到调仓清单与模拟执行；
+- `src/engine/backtest.py`：收盘信号、次日开盘成交的组合历史回测；
 - `src/engine/portfolio.py`：模拟账户领域模型；
-- `src/data/portfolio_db.py`：模拟账户SQLite和JSON备份；
+- `src/data/portfolio_db.py`：单账户SQLite/PostgreSQL和JSON备份；
 - `app.py`：唯一Streamlit入口。
 
 ## 开发约束

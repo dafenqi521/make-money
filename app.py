@@ -1,10 +1,11 @@
-"""Standalone Streamlit app for ETF scanning and local paper trading."""
+"""Standalone Streamlit app for ETF scanning and one paper account."""
 
 from __future__ import annotations
 
 import json
+import os
 import re
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.data.portfolio_db import PortfolioDB
+from src.engine.backtest import (
+    BacktestSettings,
+    fetch_backtest_histories,
+    run_parameter_sweep,
+    run_rotation_backtest,
+)
 from src.engine.metrics import compute_drawdown_series
 from src.engine.paper_trading import (
     RebalancePlan,
@@ -21,6 +28,7 @@ from src.engine.paper_trading import (
 from src.engine.portfolio import PortfolioManager
 from src.engine.rotation_scanner import DEFAULT_ETF_POOL, scan_etf_pool
 from src.strategy.etf_rotation import RotationConfig
+from src.ui.backtest_dashboard import render_backtest_result, render_parameter_sweep
 from src.ui.terminal_theme import PRIMARY, apply_chart_theme, inject_css
 
 
@@ -49,9 +57,19 @@ def _parse_codes(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(codes))
 
 
+def _runtime_setting(name: str) -> str | None:
+    """Read Streamlit secrets first, then environment variables."""
+
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        value = None
+    return str(value).strip() if value else os.getenv(name)
+
+
 @st.cache_resource
-def _database() -> PortfolioDB:
-    return PortfolioDB()
+def _database(database_url: str | None) -> PortfolioDB:
+    return PortfolioDB(database_url=database_url)
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -75,6 +93,54 @@ def _cached_scan(
         correlation_threshold=correlation_threshold,
     )
     return scan_etf_pool(pool=pool, config=config)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_backtest(
+    pool_key: tuple[str, ...],
+    start_date_value: str,
+    end_date_value: str,
+    initial_capital: float,
+    slippage_pct: float,
+    signal_frequency: str,
+    benchmark_code: str,
+    max_positions: int,
+    cash_reserve: float,
+    max_position_weight: float,
+    min_avg_amount: float,
+    min_daily_amount: float,
+    correlation_threshold: float,
+):
+    default_map = {entry["code"]: dict(entry) for entry in DEFAULT_ETF_POOL}
+    pool = [default_map.get(code, {"code": code}) for code in pool_key]
+    start_value = date.fromisoformat(start_date_value)
+    end_value = date.fromisoformat(end_date_value)
+    data = fetch_backtest_histories(pool, start_value, end_value)
+    config = RotationConfig(
+        max_positions=max_positions,
+        cash_reserve=cash_reserve,
+        max_position_weight=max_position_weight,
+        min_avg_amount=min_avg_amount,
+        min_daily_amount=min_daily_amount,
+        correlation_threshold=correlation_threshold,
+    )
+    settings = BacktestSettings(
+        start_date=start_value,
+        end_date=end_value,
+        initial_capital=initial_capital,
+        slippage_pct=slippage_pct,
+        signal_frequency=signal_frequency,
+        benchmark_code=benchmark_code,
+    )
+    result = run_rotation_backtest(
+        data.histories,
+        data.metadata,
+        config,
+        settings,
+        data_errors=data.errors,
+        requested_count=data.requested_count,
+    )
+    return data, result, config, settings
 
 
 def _set_flash(level: str, message: str) -> None:
@@ -184,7 +250,12 @@ def _display_rankings(rankings: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-db = _database()
+try:
+    db = _database(_runtime_setting("DATABASE_URL"))
+except Exception as error:
+    st.error(f"数据库连接失败：{error}")
+    st.info("请检查 Streamlit Secrets 中的 DATABASE_URL；未配置时会使用本地SQLite。")
+    st.stop()
 if not st.session_state.get("paper_account_loaded"):
     st.session_state["paper_portfolio"] = db.load()
     st.session_state["paper_account_loaded"] = True
@@ -193,7 +264,16 @@ portfolio: PortfolioManager | None = st.session_state.get("paper_portfolio")
 
 with st.sidebar:
     st.title("场内ETF趋势轮动")
-    st.caption("项目扫描 · 本地模拟账户 · 手动实盘参考")
+    st.caption("项目扫描 · 单账户模拟 · 手动实盘参考")
+    database_ok, database_message = db.healthcheck()
+    if db.is_cloud_persistent and database_ok:
+        st.success("账户存储：PostgreSQL 持久化")
+    elif database_ok:
+        st.caption("账户存储：本地 SQLite（云端重启可能丢失）")
+    else:
+        st.error(f"账户存储异常：{database_message}")
+    if db.migration_warning:
+        st.warning(db.migration_warning)
 
     planned_capital = st.number_input(
         "计划/初始资金（元）",
@@ -252,10 +332,22 @@ with st.sidebar:
         pool_key = _parse_codes(custom_text)
         st.caption(f"识别到 {len(pool_key)} 个有效代码")
 
+    current_config = RotationConfig(
+        max_positions=max_positions,
+        cash_reserve=cash_reserve,
+        max_position_weight=max_position_weight,
+        min_avg_amount=min_avg_amount_wan * 10_000.0,
+        min_daily_amount=min_daily_amount_wan * 10_000.0,
+        correlation_threshold=correlation_threshold,
+    )
+
     run_scan = st.button("扫描并生成调仓清单", type="primary", width="stretch")
 
     with st.expander("账户备份与重置"):
-        st.caption("云端本地磁盘可能在重启后丢失；请定期保存JSON备份。")
+        if db.is_cloud_persistent:
+            st.caption("账户已保存到PostgreSQL；JSON备份仍可用于迁移或手工归档。")
+        else:
+            st.caption("云端本地磁盘可能在重启后丢失；请定期保存JSON备份。")
         if portfolio is not None:
             backup = json.dumps(
                 db.export_backup(portfolio), ensure_ascii=False, indent=2
@@ -308,14 +400,6 @@ if run_scan:
     if not pool_key:
         st.error("候选池为空，请输入至少一个6位ETF代码。")
     else:
-        scan_config = RotationConfig(
-            max_positions=max_positions,
-            cash_reserve=cash_reserve,
-            max_position_weight=max_position_weight,
-            min_avg_amount=min_avg_amount_wan * 10_000.0,
-            min_daily_amount=min_daily_amount_wan * 10_000.0,
-            correlation_threshold=correlation_threshold,
-        )
         with st.spinner("正在读取历史行情、计算目标组合和调仓差额……"):
             result = _cached_scan(
                 pool_key,
@@ -327,7 +411,7 @@ if run_scan:
                 correlation_threshold,
             )
             st.session_state["rotation_scan_result"] = result
-            st.session_state["rotation_scan_config"] = scan_config
+            st.session_state["rotation_scan_config"] = current_config
 
 
 result = st.session_state.get("rotation_scan_result")
@@ -388,8 +472,8 @@ else:
     st.info("请先在左侧创建模拟账户。创建后即可用扫描结果生成可执行的模拟调仓清单。")
 
 
-tab_rebalance, tab_account, tab_trades, tab_universe = st.tabs(
-    ["今日调仓", "模拟账户", "交易记录", "候选明细"]
+tab_rebalance, tab_account, tab_trades, tab_universe, tab_backtest = st.tabs(
+    ["今日调仓", "模拟账户", "交易记录", "候选明细", "历史回测"]
 )
 
 
@@ -597,6 +681,117 @@ with tab_universe:
             with st.expander(f"数据读取失败（{len(result.errors)}只）"):
                 for code, error in result.errors.items():
                     st.write(f"- `{code}`：{error}")
+
+
+with tab_backtest:
+    st.subheader("历史回测与基准比较")
+    st.caption(
+        "回测仅使用项目能够读取的ETF日线；信号在收盘后生成，下一交易日开盘模拟成交，"
+        "并计入佣金、100份交易单位、T+1和所选滑点。"
+    )
+    backtest_col1, backtest_col2, backtest_col3 = st.columns(3)
+    backtest_start = backtest_col1.date_input(
+        "回测开始",
+        value=date.today() - timedelta(days=365),
+        key="backtest_start",
+    )
+    backtest_end = backtest_col2.date_input(
+        "回测结束",
+        value=date.today(),
+        key="backtest_end",
+    )
+    backtest_capital = backtest_col3.number_input(
+        "回测初始资金（元）",
+        min_value=10_000,
+        max_value=100_000_000,
+        value=int(planned_capital),
+        step=10_000,
+        key="backtest_capital",
+    )
+
+    backtest_col4, backtest_col5, backtest_col6 = st.columns(3)
+    frequency_label = backtest_col4.selectbox(
+        "信号频率",
+        ["每日", "每周末", "每月末"],
+        help="每日与当前扫描纪律一致；周/月频率用于比较换手影响。",
+    )
+    frequency_map = {"每日": "daily", "每周末": "weekly", "每月末": "monthly"}
+    backtest_slippage_bps = backtest_col5.number_input(
+        "单边滑点（基点）",
+        min_value=0,
+        max_value=100,
+        value=10,
+        step=5,
+        key="backtest_slippage",
+    )
+    default_map = {entry["code"]: entry["name"] for entry in DEFAULT_ETF_POOL}
+    benchmark_codes = list(pool_key)
+    benchmark_default = benchmark_codes.index("510300") if "510300" in benchmark_codes else 0
+    benchmark_code = backtest_col6.selectbox(
+        "比较基准",
+        benchmark_codes or ["510300"],
+        index=benchmark_default if benchmark_codes else 0,
+        format_func=lambda code: f"{code} {default_map.get(code, '')}".strip(),
+    )
+
+    run_backtest = st.button(
+        "运行历史回测",
+        type="primary",
+        width="stretch",
+        disabled=not bool(pool_key),
+    )
+    st.caption("默认19只ETF、每日信号和一年区间通常需要数十秒；相同参数会使用一小时缓存。")
+    if run_backtest:
+        if backtest_start >= backtest_end:
+            st.error("回测开始日期必须早于结束日期。")
+        else:
+            with st.spinner("正在下载历史行情并逐交易日回放策略，请稍候……"):
+                try:
+                    bundle = _cached_backtest(
+                        pool_key,
+                        backtest_start.isoformat(),
+                        backtest_end.isoformat(),
+                        float(backtest_capital),
+                        backtest_slippage_bps / 10_000.0,
+                        frequency_map[frequency_label],
+                        benchmark_code,
+                        max_positions,
+                        cash_reserve,
+                        max_position_weight,
+                        min_avg_amount_wan * 10_000.0,
+                        min_daily_amount_wan * 10_000.0,
+                        correlation_threshold,
+                    )
+                    st.session_state["backtest_bundle"] = bundle
+                    st.session_state.pop("backtest_parameter_sweep", None)
+                except Exception as error:
+                    st.error(f"历史回测失败：{error}")
+
+    backtest_bundle = st.session_state.get("backtest_bundle")
+    if backtest_bundle is None:
+        st.info("设置区间和基准后点击“运行历史回测”。回测结果不会修改模拟账户。")
+    else:
+        backtest_data, backtest_result, backtest_config, backtest_settings = backtest_bundle
+        render_backtest_result(backtest_result)
+        st.divider()
+        st.subheader("参数稳健性检查")
+        st.caption("固定其他参数，仅比较最多持有2、3、4、5只ETF；运行时间约为单次回测的4倍。")
+        if st.button(
+            "运行持仓数量稳健性检查",
+            disabled=backtest_data.coverage < 0.80,
+        ):
+            with st.spinner("正在依次回放4组持仓数量参数……"):
+                sweep = run_parameter_sweep(
+                    backtest_data.histories,
+                    backtest_data.metadata,
+                    backtest_config,
+                    backtest_settings,
+                    max_positions_values=(2, 3, 4, 5),
+                )
+                st.session_state["backtest_parameter_sweep"] = sweep
+        sweep = st.session_state.get("backtest_parameter_sweep")
+        if sweep is not None:
+            render_parameter_sweep(sweep)
 
 
 with st.expander("策略与模拟交易规则", expanded=False):

@@ -5,3 +5,4 @@ src/notify/config.json
 src/data/macro_cache/
 logs/
 src/data/portfolio_db/
+.streamlit/secrets.toml

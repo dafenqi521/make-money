@@ -23,6 +23,7 @@ app.py
   │    └─ src/strategy/etf_rotation.py
   ├─ src/engine/paper_trading.py
   │    └─ src/engine/portfolio.py
+  ├─ src/engine/backtest.py
   └─ src/data/portfolio_db.py
 ```
 
@@ -30,7 +31,7 @@ app.py
 
 ```bash
 python -m pytest tests -q
-python -m py_compile app.py src/strategy/etf_rotation.py src/engine/rotation_scanner.py src/engine/paper_trading.py src/engine/portfolio.py src/data/portfolio_db.py
+python -m py_compile app.py src/strategy/etf_rotation.py src/engine/rotation_scanner.py src/engine/paper_trading.py src/engine/backtest.py src/engine/portfolio.py src/data/portfolio_db.py
 python -m streamlit run app.py
 ```
 
@@ -40,6 +41,6 @@ python -m streamlit run app.py
 - 信号只使用已完成交易日数据；
 - ETF费用模型不含股票印花税；
 - 买卖数量按100份取整，同日新买份额不可卖；
-- SQLite用于单用户模拟账户；云端必须提供JSON备份恢复；
+- 项目只保留一个模拟账户；SQLite用于本地，云端可用DATABASE_URL切换PostgreSQL；
 - 默认不连接真实券商，不承诺收益；
 - 用户已有未关联修改必须保留。
