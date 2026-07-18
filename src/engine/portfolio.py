@@ -1,4 +1,4 @@
-"""Paper-trading portfolio manager — real-time position tracking.
+"""Paper-trading portfolio manager for the ETF rotation strategy.
 
 Tracks cash, holdings, and trade history.  Executes buy/sell based
 on strategy signals and computes P&L.  Designed to be stored in
@@ -13,8 +13,8 @@ Usage::
     from src.engine.portfolio import PortfolioManager
 
     pm = PortfolioManager(initial_capital=100_000)
-    trade = pm.buy("510300", price=4.829, shares=1000, reason="4%定投 第1份")
-    trade = pm.sell("510300", price=5.100, shares=500, reason="高估卖出")
+    trade = pm.buy("510300", price=4.829, shares=1000, reason="进入目标组合")
+    trade = pm.sell("510300", price=5.100, shares=500, reason="趋势退出")
     print(pm.summary())
 """
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import date
 from typing import Optional
 
 
@@ -48,6 +48,13 @@ class Holding:
     avg_cost: float = 0.0        # average cost per share
     total_cost: float = 0.0      # total amount spent (includes commission)
     current_price: float = 0.0   # latest market price
+    entry_date: str = ""         # first entry date of the current position
+    highest_price: float = 0.0   # high-water mark used by trailing exits
+    last_buy_date: str = ""      # T+1 bookkeeping
+    last_buy_shares: int = 0     # shares bought on ``last_buy_date``
+    rank_weak_days: int = 0
+    trend_weak_days: int = 0
+    last_signal_date: str = ""
 
     @property
     def market_value(self) -> float:
@@ -72,6 +79,8 @@ class Holding:
             "market_value": round(self.market_value, 2),
             "unrealized_pnl": round(self.unrealized_pnl, 2),
             "unrealized_pnl_pct": round(self.unrealized_pnl_pct * 100, 2),
+            "entry_date": self.entry_date,
+            "highest_price": round(self.highest_price, 4),
         }
 
 
@@ -181,6 +190,16 @@ class PortfolioManager:
     def get_holding(self, code: str) -> Holding | None:
         return self._holdings.get(code)
 
+    def available_shares(self, code: str, trade_date: str | None = None) -> int:
+        """Return shares that can be sold under the unified T+1 rule."""
+
+        holding = self._holdings.get(code)
+        if holding is None:
+            return 0
+        effective_date = trade_date or date.today().isoformat()
+        blocked = holding.last_buy_shares if holding.last_buy_date == effective_date else 0
+        return self.round_lot(max(0, holding.shares - blocked))
+
     # ------------------------------------------------------------------
     # Trade execution
     # ------------------------------------------------------------------
@@ -230,6 +249,8 @@ class PortfolioManager:
         if total_cost > self.cash or shares <= 0:
             return None
 
+        effective_date = trade_date or date.today().isoformat()
+
         # Update cash
         self.cash -= total_cost
 
@@ -242,18 +263,30 @@ class PortfolioManager:
             h.total_cost = new_total_cost
             h.avg_cost = new_total_cost / new_total_shares if new_total_shares > 0 else 0.0
             h.current_price = price
+            h.highest_price = max(h.highest_price, price)
+            if h.last_buy_date == effective_date:
+                h.last_buy_shares += shares
+            else:
+                h.last_buy_date = effective_date
+                h.last_buy_shares = shares
             if name:
                 h.name = name
         else:
             self._holdings[code] = Holding(
                 code=code, name=name, shares=shares,
-                avg_cost=price, total_cost=total_cost, current_price=price,
+                avg_cost=total_cost / shares,
+                total_cost=total_cost,
+                current_price=price,
+                entry_date=effective_date,
+                highest_price=price,
+                last_buy_date=effective_date,
+                last_buy_shares=shares,
             )
 
         # Record trade
         trade = ExecutedTrade(
             trade_id=uuid.uuid4().hex,
-            date=trade_date or date.today().isoformat(),
+            date=effective_date,
             code=code, name=name, action="buy",
             price=price, shares=shares,
             amount=trade_amount, commission=commission,
@@ -294,7 +327,8 @@ class PortfolioManager:
         if holding is None or holding.shares <= 0:
             return None
 
-        shares = min(shares, self.round_lot(holding.shares))
+        effective_date = trade_date or date.today().isoformat()
+        shares = min(shares, self.available_shares(code, effective_date))
         if shares <= 0:
             return None
 
@@ -325,7 +359,7 @@ class PortfolioManager:
         # Record trade
         trade = ExecutedTrade(
             trade_id=uuid.uuid4().hex,
-            date=trade_date or date.today().isoformat(),
+            date=effective_date,
             code=code, name=name or (holding.name if holding else ""),
             action="sell", price=price, shares=shares,
             amount=trade_amount, commission=commission,
@@ -343,8 +377,12 @@ class PortfolioManager:
     def update_prices(self, prices: dict[str, float]) -> None:
         """Update current market prices for all holdings."""
         for code, price in prices.items():
-            if code in self._holdings:
+            if code in self._holdings and price > 0:
                 self._holdings[code].current_price = price
+                self._holdings[code].highest_price = max(
+                    self._holdings[code].highest_price,
+                    price,
+                )
 
     @property
     def total_market_value(self) -> float:
@@ -414,6 +452,13 @@ class PortfolioManager:
                     "total_cost": h.total_cost,
                     "current_price": h.current_price,
                     "name": h.name,
+                    "entry_date": h.entry_date,
+                    "highest_price": h.highest_price,
+                    "last_buy_date": h.last_buy_date,
+                    "last_buy_shares": h.last_buy_shares,
+                    "rank_weak_days": h.rank_weak_days,
+                    "trend_weak_days": h.trend_weak_days,
+                    "last_signal_date": h.last_signal_date,
                 }
                 for code, h in self._holdings.items()
             },
@@ -447,6 +492,13 @@ class PortfolioManager:
                 shares=hd["shares"], avg_cost=hd["avg_cost"],
                 total_cost=hd["total_cost"],
                 current_price=hd.get("current_price", 0.0),
+                entry_date=hd.get("entry_date", ""),
+                highest_price=hd.get("highest_price", hd.get("current_price", 0.0)),
+                last_buy_date=hd.get("last_buy_date", ""),
+                last_buy_shares=hd.get("last_buy_shares", 0),
+                rank_weak_days=hd.get("rank_weak_days", 0),
+                trend_weak_days=hd.get("trend_weak_days", 0),
+                last_signal_date=hd.get("last_signal_date", ""),
             )
 
         for td in d.get("_trades", []):

@@ -1,13 +1,14 @@
-"""SQLite persistence for paper-trading portfolio.
+"""SQLite persistence for the ETF-rotation paper account.
 
 Stores portfolio state (cash, P&L), holdings, full trade history,
 and trade cycle tracking so that positions survive Streamlit server restarts.
 
-Schema (4 tables, auto-created):
+Schema (5 tables, auto-created):
   - portfolio_state: singleton row with cash, P&L, config
   - holdings: one row per ETF position
   - trades: full trade log, append-only
   - trade_cycles: buy→sell round-trip tracking for strategy refinement
+  - equity_snapshots: daily account-equity history
 
 Usage::
 
@@ -21,12 +22,14 @@ Usage::
 
 from __future__ import annotations
 
-import os
+import math
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
-from src.engine.portfolio import PortfolioManager, Holding, ExecutedTrade
-from src.engine.broker import Broker
+import pandas as pd
+
+from src.engine.portfolio import LOT_SIZE, ExecutedTrade, Holding, PortfolioManager
 
 # ---------------------------------------------------------------------------
 # DB location
@@ -62,7 +65,15 @@ CREATE TABLE IF NOT EXISTS holdings (
     name TEXT DEFAULT '',
     shares INTEGER NOT NULL DEFAULT 0,
     avg_cost REAL NOT NULL DEFAULT 0,
-    total_cost REAL NOT NULL DEFAULT 0
+    total_cost REAL NOT NULL DEFAULT 0,
+    current_price REAL NOT NULL DEFAULT 0,
+    entry_date TEXT DEFAULT '',
+    highest_price REAL NOT NULL DEFAULT 0,
+    last_buy_date TEXT DEFAULT '',
+    last_buy_shares INTEGER NOT NULL DEFAULT 0,
+    rank_weak_days INTEGER NOT NULL DEFAULT 0,
+    trend_weak_days INTEGER NOT NULL DEFAULT 0,
+    last_signal_date TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -100,6 +111,18 @@ CREATE TABLE IF NOT EXISTS trade_cycles (
     is_closed INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
+
+CREATE TABLE IF NOT EXISTS equity_snapshots (
+    snapshot_date TEXT PRIMARY KEY,
+    data_as_of TEXT,
+    equity REAL NOT NULL,
+    cash REAL NOT NULL,
+    market_value REAL NOT NULL,
+    realized_pnl REAL NOT NULL,
+    unrealized_pnl REAL NOT NULL,
+    total_return REAL NOT NULL,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
 """
 
 UPSERT_STATE = """
@@ -116,8 +139,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 UPSERT_HOLDING = """
-INSERT OR REPLACE INTO holdings (code, name, shares, avg_cost, total_cost)
-VALUES (?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO holdings
+    (code, name, shares, avg_cost, total_cost, current_price, entry_date,
+     highest_price, last_buy_date, last_buy_shares, rank_weak_days,
+     trend_weak_days, last_signal_date)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 """
 
 CLEAR_HOLDINGS = "DELETE FROM holdings;"
@@ -188,7 +214,29 @@ class PortfolioDB:
         """Create tables if they don't exist (idempotent)."""
         with self._conn() as conn:
             conn.executescript(CREATE_TABLES)
+            self._migrate_holdings(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate_holdings(conn: sqlite3.Connection) -> None:
+        """Add paper-trading state columns to databases from older releases."""
+
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(holdings)").fetchall()
+        }
+        additions = {
+            "current_price": "REAL NOT NULL DEFAULT 0",
+            "entry_date": "TEXT DEFAULT ''",
+            "highest_price": "REAL NOT NULL DEFAULT 0",
+            "last_buy_date": "TEXT DEFAULT ''",
+            "last_buy_shares": "INTEGER NOT NULL DEFAULT 0",
+            "rank_weak_days": "INTEGER NOT NULL DEFAULT 0",
+            "trend_weak_days": "INTEGER NOT NULL DEFAULT 0",
+            "last_signal_date": "TEXT DEFAULT ''",
+        }
+        for column, definition in additions.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE holdings ADD COLUMN {column} {definition}")
 
     def _conn(self) -> sqlite3.Connection:
         """Return a new connection (each call). Caller must close."""
@@ -220,6 +268,10 @@ class PortfolioDB:
                     if h.shares > 0:
                         conn.execute(UPSERT_HOLDING, (
                             code, h.name, h.shares, h.avg_cost, h.total_cost,
+                            h.current_price, h.entry_date, h.highest_price,
+                            h.last_buy_date, h.last_buy_shares,
+                            h.rank_weak_days, h.trend_weak_days,
+                            h.last_signal_date,
                         ))
 
                 # -- Trades (append only, skip duplicates by trade_id) --
@@ -262,12 +314,18 @@ class PortfolioDB:
 
                 # Holdings
                 for hr in conn.execute(
-                    "SELECT code, name, shares, avg_cost, total_cost FROM holdings"
+                    "SELECT code, name, shares, avg_cost, total_cost, current_price, "
+                    "entry_date, highest_price, last_buy_date, last_buy_shares, "
+                    "rank_weak_days, trend_weak_days, last_signal_date FROM holdings"
                 ):
                     if hr[2] > 0:
                         pm._holdings[hr[0]] = Holding(
                             code=hr[0], name=hr[1], shares=hr[2],
-                            avg_cost=hr[3], total_cost=hr[4],
+                            avg_cost=hr[3], total_cost=hr[4], current_price=hr[5],
+                            entry_date=hr[6] or "", highest_price=hr[7],
+                            last_buy_date=hr[8] or "", last_buy_shares=hr[9],
+                            rank_weak_days=hr[10], trend_weak_days=hr[11],
+                            last_signal_date=hr[12] or "",
                         )
 
                 # Trades (replay in chronological order to rebuild state)
@@ -333,6 +391,180 @@ class PortfolioDB:
             return []
 
     # ------------------------------------------------------------------
+    # Daily equity snapshots
+    # ------------------------------------------------------------------
+
+    def record_snapshot(
+        self,
+        pm: PortfolioManager,
+        snapshot_date: str,
+        data_as_of: str | None = None,
+    ) -> bool:
+        """Upsert one end-of-day account valuation."""
+
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO equity_snapshots
+                        (snapshot_date, data_as_of, equity, cash, market_value,
+                         realized_pnl, unrealized_pnl, total_return, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                    """,
+                    (
+                        snapshot_date,
+                        data_as_of,
+                        pm.total_equity,
+                        pm.cash,
+                        pm.total_market_value,
+                        pm.realized_pnl,
+                        pm.total_unrealized_pnl,
+                        pm.total_return_pct,
+                    ),
+                )
+                conn.commit()
+            return True
+        except Exception:
+            return False
+
+    def get_equity_curve(self, limit: int = 1000) -> pd.DataFrame:
+        """Return persisted daily account valuations in ascending date order."""
+
+        try:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT snapshot_date, data_as_of, equity, cash, market_value,
+                           realized_pnl, unrealized_pnl, total_return
+                    FROM equity_snapshots
+                    ORDER BY snapshot_date DESC LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            columns = [
+                "date", "data_as_of", "equity", "cash", "market_value",
+                "realized_pnl", "unrealized_pnl", "total_return",
+            ]
+            result = pd.DataFrame(rows, columns=columns)
+            if not result.empty:
+                result["date"] = pd.to_datetime(result["date"])
+                result = result.sort_values("date").reset_index(drop=True)
+            return result
+        except Exception:
+            return pd.DataFrame(
+                columns=[
+                    "date", "data_as_of", "equity", "cash", "market_value",
+                    "realized_pnl", "unrealized_pnl", "total_return",
+                ]
+            )
+
+    # ------------------------------------------------------------------
+    # Portable backup for ephemeral Streamlit hosting
+    # ------------------------------------------------------------------
+
+    def export_backup(self, pm: PortfolioManager) -> dict:
+        """Return a JSON-serialisable account and equity-history backup."""
+
+        curve = self.get_equity_curve()
+        snapshots = []
+        for row in curve.to_dict("records"):
+            row["date"] = pd.Timestamp(row["date"]).date().isoformat()
+            snapshots.append(row)
+        return {
+            "schema_version": 1,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "portfolio": pm.to_dict(),
+            "equity_snapshots": snapshots,
+        }
+
+    def restore_backup(self, payload: dict) -> PortfolioManager:
+        """Validate and replace the local account from an exported backup."""
+
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ValueError("不支持的备份格式")
+        portfolio_data = payload.get("portfolio")
+        if not isinstance(portfolio_data, dict):
+            raise ValueError("备份中缺少账户数据")
+        try:
+            pm = PortfolioManager.from_dict(portfolio_data)
+            account_numbers = (
+                float(pm.initial_capital),
+                float(pm.cash),
+                float(pm.commission_rate),
+                float(pm.min_commission),
+                float(pm.realized_pnl),
+            )
+            if not all(math.isfinite(value) for value in account_numbers):
+                raise ValueError
+            if pm.initial_capital <= 0 or pm.cash < 0:
+                raise ValueError
+            if pm.commission_rate < 0 or pm.min_commission < 0:
+                raise ValueError
+            for holding in pm.holdings.values():
+                if holding.shares <= 0 or holding.shares % LOT_SIZE:
+                    raise ValueError
+                holding_numbers = (
+                    float(holding.avg_cost),
+                    float(holding.total_cost),
+                    float(holding.current_price),
+                    float(holding.highest_price),
+                )
+                if not all(math.isfinite(value) and value >= 0 for value in holding_numbers):
+                    raise ValueError
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("备份中的账户数据无效") from error
+
+        snapshots = payload.get("equity_snapshots", [])
+        if not isinstance(snapshots, list):
+            raise ValueError("备份中的净值记录无效")
+        snapshot_rows = []
+        try:
+            for snapshot in snapshots:
+                if not isinstance(snapshot, dict):
+                    raise ValueError
+                snapshot_date = datetime.fromisoformat(str(snapshot["date"])).date().isoformat()
+                data_as_of = snapshot.get("data_as_of")
+                if data_as_of:
+                    data_as_of = datetime.fromisoformat(str(data_as_of)).date().isoformat()
+                values = tuple(
+                    float(snapshot[key])
+                    for key in (
+                        "equity",
+                        "cash",
+                        "market_value",
+                        "realized_pnl",
+                        "unrealized_pnl",
+                        "total_return",
+                    )
+                )
+                if not all(math.isfinite(value) for value in values):
+                    raise ValueError
+                if values[0] < 0 or values[1] < 0 or values[2] < 0:
+                    raise ValueError
+                snapshot_rows.append((snapshot_date, data_as_of, *values))
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("备份中的净值记录无效") from error
+
+        if not self.reset() or not self.save(pm):
+            raise RuntimeError("恢复账户失败")
+        try:
+            with self._conn() as conn:
+                for snapshot_row in snapshot_rows:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO equity_snapshots
+                            (snapshot_date, data_as_of, equity, cash, market_value,
+                             realized_pnl, unrealized_pnl, total_return)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        snapshot_row,
+                    )
+                conn.commit()
+        except sqlite3.Error as error:
+            raise RuntimeError("恢复净值记录失败") from error
+        return pm
+
+    # ------------------------------------------------------------------
     # Reset
     # ------------------------------------------------------------------
 
@@ -344,6 +576,7 @@ class PortfolioDB:
                 conn.execute("DROP TABLE IF EXISTS trades")
                 conn.execute("DROP TABLE IF EXISTS holdings")
                 conn.execute("DROP TABLE IF EXISTS portfolio_state")
+                conn.execute("DROP TABLE IF EXISTS equity_snapshots")
                 conn.commit()
             self._init_tables()
             return True

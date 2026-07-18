@@ -1,9 +1,9 @@
 """Exchange-traded ETF trend-rotation strategy primitives.
 
 This module contains platform-independent selection and risk logic.  It is
-deliberately kept separate from JoinQuant APIs so the ranking rules can be
-unit-tested locally and reused by the Streamlit application, a backtester, or
-an execution adapter.
+deliberately kept independent of any hosted quant platform so the ranking
+rules can be unit-tested locally and reused by the Streamlit scanner and
+paper-trading workflow.
 
 Scope
 -----
@@ -513,4 +513,3 @@ def evaluate_exit(
         )
 
     return ExitDecision(False, position.code, "hold", "未触发退出条件")
-

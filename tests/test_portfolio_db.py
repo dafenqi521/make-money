@@ -36,10 +36,10 @@ def temp_db():
 def sample_pm():
     """A PortfolioManager with some trades and holdings."""
     pm = PortfolioManager(initial_capital=100_000)
-    pm.buy("510300", 4.829, 2000, name="沪深300ETF", reason="4%定投 第1份")
-    pm.buy("510300", 4.636, 2000, name="沪深300ETF", reason="4%定投 第2份")
-    pm.sell("510300", 5.100, 1000, name="沪深300ETF", reason="止盈卖出")
-    pm.buy("510050", 3.200, 3000, name="上证50ETF", reason="网格买入")
+    pm.buy("510300", 4.829, 2000, name="沪深300ETF", reason="进入目标组合")
+    pm.buy("510300", 4.636, 2000, name="沪深300ETF", reason="目标权重上调")
+    pm.sell("510300", 5.100, 1000, name="沪深300ETF", reason="目标权重下调")
+    pm.buy("510050", 3.200, 3000, name="上证50ETF", reason="进入目标组合")
     return pm
 
 
@@ -189,3 +189,56 @@ class TestPortfolioDB:
         """db_path returns the SQLite file path."""
         assert temp_db.db_path.endswith(".sqlite3")
         assert os.path.exists(temp_db.db_path)
+
+    def test_holding_risk_state_survives_roundtrip(self, temp_db):
+        pm = PortfolioManager(initial_capital=100_000)
+        pm.buy("510300", 4.0, 1000, trade_date="2025-07-01")
+        holding = pm.holdings["510300"]
+        holding.highest_price = 4.5
+        holding.rank_weak_days = 2
+        holding.trend_weak_days = 1
+        holding.last_signal_date = "2025-07-02"
+        pm.update_prices({"510300": 4.2})
+
+        assert temp_db.save(pm)
+        restored = temp_db.load()
+        restored_holding = restored.holdings["510300"]
+        assert restored_holding.current_price == 4.2
+        assert restored_holding.highest_price == 4.5
+        assert restored_holding.rank_weak_days == 2
+        assert restored_holding.last_signal_date == "2025-07-02"
+
+    def test_equity_snapshots_and_backup_roundtrip(self, temp_db):
+        pm = PortfolioManager(initial_capital=100_000)
+        pm.buy("510300", 4.0, 1000, trade_date="2025-07-01")
+        pm.update_prices({"510300": 4.1})
+        assert temp_db.save(pm)
+        assert temp_db.record_snapshot(pm, "2025-07-01", "2025-06-30")
+
+        curve = temp_db.get_equity_curve()
+        assert len(curve) == 1
+        assert curve.iloc[0]["equity"] == pytest.approx(pm.total_equity)
+
+        payload = temp_db.export_backup(pm)
+        temp_db.reset()
+        restored = temp_db.restore_backup(payload)
+        assert restored.total_trades == pm.total_trades
+        assert len(temp_db.get_equity_curve()) == 1
+
+    def test_restore_backup_rejects_malformed_account(self, temp_db):
+        payload = {"schema_version": 1, "portfolio": {"cash": "invalid"}}
+
+        with pytest.raises(ValueError, match="账户数据无效"):
+            temp_db.restore_backup(payload)
+
+    def test_restore_backup_validates_snapshots_before_replacing_account(self, temp_db):
+        existing = PortfolioManager(initial_capital=50_000)
+        assert temp_db.save(existing)
+        replacement = PortfolioManager(initial_capital=100_000)
+        payload = temp_db.export_backup(replacement)
+        payload["equity_snapshots"] = [{"date": "not-a-date"}]
+
+        with pytest.raises(ValueError, match="净值记录无效"):
+            temp_db.restore_backup(payload)
+
+        assert temp_db.load().initial_capital == 50_000

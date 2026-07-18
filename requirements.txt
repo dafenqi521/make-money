@@ -3,6 +3,3 @@ akshare>=1.14
 pandas>=2.0
 plotly>=5.0
 requests>=2.28
-lxml>=4.9
-beautifulsoup4>=4.11
-openpyxl>=3.0

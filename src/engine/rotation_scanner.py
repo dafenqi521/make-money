@@ -18,8 +18,8 @@ from src.strategy.etf_rotation import (
 )
 
 
-# A diversified starter universe for the local dashboard.  The JoinQuant
-# adapter uses the full historical ETF universe instead.
+# The authoritative starter universe for the standalone dashboard. Users can
+# replace it with their own six-digit exchange-traded ETF codes in the app.
 DEFAULT_ETF_POOL: tuple[dict, ...] = (
     {"code": "510300", "name": "沪深300ETF", "category": "domestic_broad"},
     {"code": "510050", "name": "上证50ETF", "category": "domestic_broad"},
@@ -160,4 +160,3 @@ def scan_etf_pool(
             all_dates.extend(pd.to_datetime(history["date"], errors="coerce").dropna().tolist())
     as_of = max(all_dates).date() if all_dates else None
     return RotationScanResult(rankings, targets, histories, errors, as_of)
-

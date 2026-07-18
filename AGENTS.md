@@ -2,7 +2,7 @@
 
 ## 唯一策略
 
-项目只支持“场内ETF多资产趋势轮动”。不要新增、恢复或保留网格、定投、短线波段、超短线、单标的均线等其他策略。
+项目只支持“场内ETF多资产趋势轮动”。不要新增、恢复或保留网格、定投、短线波段、超短线、单标的均线等其他策略，也不要重新引入聚宽依赖。
 
 策略核心：
 
@@ -18,26 +18,28 @@
 
 ```text
 app.py
-  └─ src/engine/rotation_scanner.py
-       ├─ src/data/fetcher.py
-       └─ src/strategy/etf_rotation.py
-
-joinquant/etf_rotation_strategy.py  # 聚宽独立执行适配器
+  ├─ src/engine/rotation_scanner.py
+  │    ├─ src/data/fetcher.py
+  │    └─ src/strategy/etf_rotation.py
+  ├─ src/engine/paper_trading.py
+  │    └─ src/engine/portfolio.py
+  └─ src/data/portfolio_db.py
 ```
 
 ## 验证
 
 ```bash
 python -m pytest tests -q
-python -m py_compile app.py src/strategy/etf_rotation.py src/engine/rotation_scanner.py joinquant/etf_rotation_strategy.py
-streamlit run app.py
+python -m py_compile app.py src/strategy/etf_rotation.py src/engine/rotation_scanner.py src/engine/paper_trading.py src/engine/portfolio.py src/data/portfolio_db.py
+python -m streamlit run app.py
 ```
 
 ## 约束
 
-- 数据缺失或过期时不得产生买入信号；
-- 信号只使用前一交易日及更早的完整日线；
+- 数据缺失、扫描覆盖率不足或数据过期时不得产生自动交易；
+- 信号只使用已完成交易日数据；
 - ETF费用模型不含股票印花税；
-- 本地应用只做研究和模拟建议；真实下单必须经过独立券商适配和安全门；
+- 买卖数量按100份取整，同日新买份额不可卖；
+- SQLite用于单用户模拟账户；云端必须提供JSON备份恢复；
+- 默认不连接真实券商，不承诺收益；
 - 用户已有未关联修改必须保留。
-
