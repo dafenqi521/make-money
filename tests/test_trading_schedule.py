@@ -7,8 +7,11 @@ import pandas as pd
 from src.engine.trading_schedule import (
     confirmation_window,
     drop_incomplete_daily_bar,
+    is_trading_day,
+    next_trading_day,
     quote_matches_trade_date,
     realtime_price_for_action,
+    validate_realtime_quote,
 )
 
 
@@ -92,3 +95,56 @@ def test_live_price_requires_today_quote_and_uses_correct_book_side():
     assert realtime_price_for_action(quote, "buy", date(2026, 7, 20)) == 4.01
     assert realtime_price_for_action(quote, "sell", date(2026, 7, 20)) == 3.99
     assert realtime_price_for_action(quote, "buy", date(2026, 7, 21)) is None
+
+
+def test_exchange_calendar_blocks_official_holiday_and_finds_next_session():
+    assert not is_trading_day(date(2026, 10, 1))
+    assert next_trading_day(date(2026, 9, 30)) == date(2026, 10, 8)
+
+
+def test_realtime_quote_gate_checks_age_depth_limits_and_deviation():
+    base = {
+        "date": "2026-07-20",
+        "time": "09:39:50",
+        "bid1_price": 3.99,
+        "bid1_volume": 100,
+        "ask1_price": 4.01,
+        "ask1_volume": 100,
+        "limit_up": 4.4,
+        "limit_down": 3.6,
+    }
+    now = datetime(2026, 7, 20, 9, 40, 0)
+
+    valid = validate_realtime_quote(
+        base, "buy", date(2026, 7, 20), 5000, 4.0, now=now
+    )
+    stale = validate_realtime_quote(
+        {**base, "time": "09:39:00"},
+        "buy",
+        date(2026, 7, 20),
+        5000,
+        4.0,
+        now=now,
+    )
+    shallow = validate_realtime_quote(
+        {**base, "ask1_volume": 10},
+        "buy",
+        date(2026, 7, 20),
+        5000,
+        4.0,
+        now=now,
+    )
+    deviated = validate_realtime_quote(
+        {**base, "ask1_price": 4.2},
+        "buy",
+        date(2026, 7, 20),
+        5000,
+        4.0,
+        now=now,
+    )
+
+    assert valid.valid and valid.price == 4.01
+    assert valid.available_shares == 10_000
+    assert not stale.valid and "过期" in stale.reason
+    assert not shallow.valid and "挂单量" in shallow.reason
+    assert not deviated.valid and "偏离" in deviated.reason

@@ -4,9 +4,11 @@
 
 ## 当前能力
 
-- 默认19只代表性场内ETF，也支持输入自定义6位ETF代码；
+- 自动发现并保存沪深全市场ETF目录，刷新失败或数量异常收缩超过30%时沿用上一份有效快照；
+- 页面即时扫描高流动性前80只，收盘后台任务扫描所有通过流动性预筛的ETF；
+- 默认19只仅作为行情源故障时的安全备用池，也支持自定义6位ETF代码；
 - 使用最新完整日线进行流动性、趋势、动量、波动和回撤筛选；
-- 打开页面、修改参数，或缓存超过15分钟后的下一次页面交互时自动扫描，不需要手动触发；
+- 打开页面或修改参数后自动扫描；全市场模式缓存6小时，其他模式缓存15分钟；
 - 生成最多4只ETF的目标组合、目标权重和100份整数建议；
 - 将目标组合与本地模拟持仓比较，生成买入、卖出和继续持有清单；
 - 模拟佣金、滑点、现金约束和统一T+1规则；
@@ -14,6 +16,8 @@
 - 默认SQLite保存单个模拟账户；配置`DATABASE_URL`后使用PostgreSQL长期保存；
 - 支持JSON备份恢复；
 - 只在开市日指定时段允许确认，并用当日实时买一/卖一价重新计算模拟订单；
+- 使用交易所日历识别法定休市日，同一信号批次数据库层面只允许执行一次；
+- 确认盘口必须在30秒内，挂单量足够，且未触及涨跌停或偏离信号价超过3%；
 - 数据过期、扫描覆盖率不足、实时盘口不足或单只持仓读取失败时冻结自动交易。
 
 ## 运行
@@ -27,7 +31,7 @@ python -m streamlit run app.py
 浏览器打开 `http://localhost:8501`，依次完成：
 
 1. 创建模拟账户；
-2. 确认默认或自定义ETF候选池；
+2. 默认使用“自动全市场ETF池”，也可切换备用池或自定义ETF池；
 3. 等待页面自动扫描，查看数据日期、覆盖率、目标组合和调仓差额；
 4. 在信号后的下一开市日09:35–10:00（北京时间）打开页面；
 5. 核对实时复价后点击一次“确认模拟执行”，或者在券商手工成交后登记；
@@ -43,11 +47,15 @@ python -m streamlit run app.py
 - `src/data/fetcher.py`：本项目行情数据源；
 - `src/strategy/etf_rotation.py`：选基、仓位和退出规则；
 - `src/engine/rotation_scanner.py`：候选池扫描；
+- `src/engine/etf_universe.py`：全市场ETF发现、标准化、质量门槛和预筛；
+- `src/engine/signal_batch.py`：确定性信号批次与持久化格式；
 - `src/engine/paper_trading.py`：调仓清单和模拟执行；
 - `src/engine/trading_schedule.py`：完整日线、确认时段和实时盘口日期门禁；
 - `src/engine/backtest.py`：无前视偏差的组合历史回测、基准和参数检查；
 - `src/engine/portfolio.py`：现金、持仓、成交和T+1状态；
 - `src/data/portfolio_db.py`：SQLite/PostgreSQL持久化、净值快照和JSON备份。
+- `src/jobs/daily_signal.py`：收盘扫描和次日确认提醒任务；
+- `.github/workflows/etf-automation.yml`：交易日15:20扫描、09:35提醒。
 
 ## 部署
 
@@ -64,6 +72,15 @@ DATABASE_URL = "postgresql://用户名:密码@主机:5432/数据库?sslmode=requ
 
 3. 重新部署后，侧栏应显示“账户存储：PostgreSQL 持久化”；
 4. 不配置`DATABASE_URL`时继续使用本地SQLite，并应定期保存JSON备份。
+
+后台任务与Streamlit必须连接同一个PostgreSQL。在GitHub仓库的
+`Settings → Secrets and variables → Actions`中另外配置：
+
+- `DATABASE_URL`：与Streamlit Secrets相同的PostgreSQL连接串，必填；
+- `NOTIFY_WEBHOOK_URL`：可接收JSON POST的通知地址，可选。未配置时任务仍会生成信号，但只在Actions日志中记录提醒。
+
+GitHub Actions按北京时间周一至周五15:20刷新目录并生成信号，09:35检查待确认批次；
+交易所日历会在法定休市日自动跳过。GitHub定时任务可能有分钟级延迟，因此它只负责生成日线信号和提醒，不参与成交。
 
 不要把真实数据库密码提交到Git仓库。
 

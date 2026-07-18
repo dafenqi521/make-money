@@ -284,3 +284,58 @@ class TestPortfolioDB:
             temp_db.restore_backup(payload)
 
         assert temp_db.load().initial_capital == 50_000
+
+    def test_universe_refresh_failure_preserves_last_valid_snapshot(self, temp_db):
+        entries = [
+            {
+                "code": "510300",
+                "name": "沪深300ETF",
+                "exchange": "SSE",
+                "category": "domestic_broad",
+                "price": 4.0,
+                "amount": 100_000_000,
+                "listed_date": "2012-05-28",
+                "eligible": True,
+                "exclusion_reason": "",
+                "source": "mock",
+                "refreshed_at": "2026-07-20T15:20:00+08:00",
+            }
+        ]
+        run_id = temp_db.replace_etf_universe(
+            entries, "mock", "2026-07-20T15:20:00+08:00"
+        )
+        temp_db.record_universe_failure(
+            "network down", "2026-07-21T15:20:00+08:00"
+        )
+
+        restored = temp_db.get_etf_universe()
+        status = temp_db.get_universe_status()
+
+        assert restored[0]["code"] == "510300"
+        assert restored[0]["run_id"] == run_id
+        assert status["status"] == "failed"
+
+    def test_signal_batch_is_persisted_and_execution_is_idempotent(self, temp_db):
+        assert temp_db.save_signal_batch(
+            batch_id="batch-1",
+            signal_date="2026-07-17",
+            config_hash="config",
+            pool_hash="pool",
+            payload={"schema_version": 1},
+            scan_count=100,
+            error_count=2,
+        )
+
+        stored = temp_db.get_latest_signal_batch(
+            config_hash="config", pool_hash="pool"
+        )
+        first_claim = temp_db.claim_execution_batch("batch-1")
+        second_claim = temp_db.claim_execution_batch("batch-1")
+        assert temp_db.complete_execution_batch("batch-1", "completed", 2)
+        third_claim = temp_db.claim_execution_batch("batch-1")
+
+        assert stored["batch_id"] == "batch-1"
+        assert stored["payload"]["schema_version"] == 1
+        assert first_claim == (True, "executing")
+        assert second_claim == (False, "executing")
+        assert third_claim == (False, "completed")

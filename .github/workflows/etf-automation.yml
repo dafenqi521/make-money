@@ -1,0 +1,52 @@
+name: ETF signal automation
+
+on:
+  schedule:
+    - cron: "20 7 * * 1-5"
+    - cron: "35 1 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task to run
+        required: true
+        default: scan
+        type: choice
+        options:
+          - scan
+          - remind
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etf-signal-automation
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+      SCAN_MAX_WORKERS: "12"
+      MAX_SCAN_ETFS: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Choose task
+        id: task
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.task }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "35 1 * * 1-5" ]; then
+            echo "value=remind" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=scan" >> "$GITHUB_OUTPUT"
+          fi
+      - run: python -m src.jobs.daily_signal "${{ steps.task.outputs.value }}"

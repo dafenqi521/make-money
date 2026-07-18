@@ -326,6 +326,7 @@ def reprice_rebalance_plan(
     trade_date: str,
     minimum_coverage: float = 0.80,
     missing_price_reason: str = "当日实时盘口缺失，未模拟成交",
+    available_shares: Mapping[str, int] | None = None,
 ) -> RebalancePlan:
     """Re-size a close-generated plan using executable prices.
 
@@ -401,12 +402,25 @@ def reprice_rebalance_plan(
             target_shares = current_shares + delta
 
         action = "buy" if delta > 0 else "sell" if delta < 0 else "hold"
+        book_capacity = (available_shares or {}).get(code)
+        if action in {"buy", "sell"} and (
+            book_capacity is None and available_shares is not None
+            or book_capacity is not None and abs(delta) > int(book_capacity)
+        ):
+            errors[code] = "买一/卖一挂单量不足以覆盖重新计算后的订单"
+            delta = 0
+            target_shares = current_shares
+            action = "hold"
+            order_reason = errors[code]
+        else:
+            order_reason = str(order["reason"])
         orders.loc[index, "reference_price"] = price
         orders.loc[index, "current_shares"] = current_shares
         orders.loc[index, "target_shares"] = target_shares
         orders.loc[index, "delta_shares"] = delta
         orders.loc[index, "estimated_amount"] = abs(delta) * price
         orders.loc[index, "action"] = action
+        orders.loc[index, "reason"] = order_reason
 
     quote_coverage = priced_count / actionable_count if actionable_count else 1.0
     if actionable_count and quote_coverage < minimum_coverage:

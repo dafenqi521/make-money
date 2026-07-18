@@ -593,15 +593,12 @@ def fetch_etf_info(symbol: str) -> dict:
     }
 
 
-def fetch_etf_hist(
+def fetch_etf_hist_primary(
     symbol: str,
     start_date: str = None,
     end_date: str = None,
 ) -> pd.DataFrame:
-    """Fetch historical daily OHLCV data with MA5/10/20 and computed indicators.
-
-    Tries Baidu Gushitong first (built-in MA, no IP block),
-    falls back to AKShare/Sina.
+    """Fetch daily history from the thread-safe primary Baidu source only.
 
     Args:
         symbol: ETF ticker code, e.g. "510300".
@@ -620,7 +617,6 @@ def fetch_etf_hist(
 
     symbol = symbol.strip()
 
-    # --- Try Baidu (primary) ---
     df = _baidu_kline(symbol)
     if not df.empty:
         # Filter by date
@@ -635,6 +631,31 @@ def fetch_etf_hist(
                 f"No data for '{symbol}' in the specified date range."
             )
         return df.sort_values("date", ascending=False).reset_index(drop=True)
+
+    raise ValueError(
+        f"No primary-source data for '{symbol}'. Check the code and network."
+    )
+
+
+def fetch_etf_hist(
+    symbol: str,
+    start_date: str = None,
+    end_date: str = None,
+) -> pd.DataFrame:
+    """Fetch historical daily OHLCV data with a legacy single-call fallback.
+
+    Large concurrent universe scans must use :func:`fetch_etf_hist_primary`;
+    AKShare's Sina parser embeds a JavaScript runtime that is unsafe to
+    initialise concurrently on some Windows/Python builds.
+    """
+
+    if not symbol or not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("symbol must be a non-empty string")
+
+    try:
+        return fetch_etf_hist_primary(symbol, start_date, end_date)
+    except ValueError:
+        pass
 
     # --- Fallback: AKShare/Sina ---
     df = _akshare_hist(symbol, start_date=start_date, end_date=end_date)

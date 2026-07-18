@@ -12,7 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.data.fetcher import fetch_multi_etf_info
+from src.data.fetcher import fetch_etf_hist_primary, fetch_multi_etf_info
 from src.data.portfolio_db import PortfolioDB
 from src.engine.backtest import (
     BacktestSettings,
@@ -21,6 +21,15 @@ from src.engine.backtest import (
     run_rotation_backtest,
 )
 from src.engine.metrics import compute_drawdown_series
+from src.engine.etf_universe import select_scan_pool
+from src.engine.signal_batch import (
+    batch_id_for,
+    config_hash,
+    deserialize_scan_result,
+    pool_hash,
+    serialize_scan_result,
+)
+from src.jobs.daily_signal import refresh_universe
 from src.engine.paper_trading import (
     RebalancePlan,
     build_rebalance_plan,
@@ -30,9 +39,11 @@ from src.engine.paper_trading import (
 from src.engine.portfolio import PortfolioManager
 from src.engine.rotation_scanner import DEFAULT_ETF_POOL, scan_etf_pool
 from src.engine.trading_schedule import (
+    DAILY_BAR_READY_TIME,
     confirmation_window,
-    realtime_price_for_action,
+    is_trading_day,
     shanghai_now,
+    validate_realtime_quote,
 )
 from src.strategy.etf_rotation import RotationConfig
 from src.ui.backtest_dashboard import render_backtest_result, render_parameter_sweep
@@ -64,6 +75,17 @@ def _parse_codes(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(codes))
 
 
+def _pool_items(pool: list[dict]) -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (
+            str(row["code"]),
+            str(row.get("name") or f"ETF {row['code']}"),
+            str(row.get("category") or "other"),
+        )
+        for row in pool
+    )
+
+
 def _runtime_setting(name: str) -> str | None:
     """Read Streamlit secrets first, then environment variables."""
 
@@ -81,7 +103,7 @@ def _database(database_url: str | None) -> PortfolioDB:
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _cached_scan(
-    pool_key: tuple[str, ...],
+    pool_items: tuple[tuple[str, str, str], ...],
     max_positions: int,
     cash_reserve: float,
     max_position_weight: float,
@@ -89,8 +111,10 @@ def _cached_scan(
     min_daily_amount: float,
     correlation_threshold: float,
 ):
-    default_map = {entry["code"]: dict(entry) for entry in DEFAULT_ETF_POOL}
-    pool = [default_map.get(code, {"code": code}) for code in pool_key]
+    pool = [
+        {"code": code, "name": name, "category": category}
+        for code, name, category in pool_items
+    ]
     config = RotationConfig(
         max_positions=max_positions,
         cash_reserve=cash_reserve,
@@ -99,12 +123,18 @@ def _cached_scan(
         min_daily_amount=min_daily_amount,
         correlation_threshold=correlation_threshold,
     )
-    return scan_etf_pool(pool=pool, config=config)
+    if len(pool) > 50:
+        return scan_etf_pool(
+            pool=pool,
+            config=config,
+            history_fetcher=fetch_etf_hist_primary,
+        )
+    return scan_etf_pool(pool=pool, config=config, max_workers=1)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_backtest(
-    pool_key: tuple[str, ...],
+    pool_items: tuple[tuple[str, str, str], ...],
     start_date_value: str,
     end_date_value: str,
     initial_capital: float,
@@ -118,11 +148,23 @@ def _cached_backtest(
     min_daily_amount: float,
     correlation_threshold: float,
 ):
-    default_map = {entry["code"]: dict(entry) for entry in DEFAULT_ETF_POOL}
-    pool = [default_map.get(code, {"code": code}) for code in pool_key]
+    pool = [
+        {"code": code, "name": name, "category": category}
+        for code, name, category in pool_items
+    ]
     start_value = date.fromisoformat(start_date_value)
     end_value = date.fromisoformat(end_date_value)
-    data = fetch_backtest_histories(pool, start_value, end_value)
+    if len(pool) > 50:
+        data = fetch_backtest_histories(
+            pool,
+            start_value,
+            end_value,
+            history_fetcher=fetch_etf_hist_primary,
+        )
+    else:
+        data = fetch_backtest_histories(
+            pool, start_value, end_value, max_workers=1
+        )
     config = RotationConfig(
         max_positions=max_positions,
         cash_reserve=cash_reserve,
@@ -267,6 +309,27 @@ if not st.session_state.get("paper_account_loaded"):
     st.session_state["paper_portfolio"] = db.load()
     st.session_state["paper_account_loaded"] = True
 portfolio: PortfolioManager | None = st.session_state.get("paper_portfolio")
+universe_entries = db.get_etf_universe()
+universe_status = db.get_universe_status()
+current_market_time = shanghai_now()
+valid_universe_time = None
+if universe_entries:
+    valid_universe_time = pd.to_datetime(
+        universe_entries[0].get("refreshed_at"), errors="coerce"
+    )
+universe_refresh_due = not universe_entries or (
+    is_trading_day(current_market_time.date())
+    and current_market_time.time().replace(tzinfo=None) >= DAILY_BAR_READY_TIME
+    and (
+        pd.isna(valid_universe_time)
+        or valid_universe_time.date() < current_market_time.date()
+    )
+)
+if universe_refresh_due and not st.session_state.get("universe_refresh_attempted"):
+    universe_entries, universe_status = refresh_universe(
+        db, now=current_market_time
+    )
+    st.session_state["universe_refresh_attempted"] = True
 
 
 with st.sidebar:
@@ -326,18 +389,68 @@ with st.sidebar:
             "60日相关性去重阈值", 0.70, 0.99, 0.90, 0.01
         )
 
-    pool_mode = st.radio("候选池", ["默认多资产池", "自定义ETF代码"])
-    if pool_mode == "默认多资产池":
-        pool_key = tuple(entry["code"] for entry in DEFAULT_ETF_POOL)
-        st.caption(f"当前包含 {len(pool_key)} 只代表性场内ETF")
+    pool_mode = st.radio(
+        "候选池",
+        ["自动全市场ETF池", "默认19只备用池", "自定义ETF代码"],
+    )
+    if pool_mode == "自动全市场ETF池":
+        held_codes = portfolio.holdings.keys() if portfolio else ()
+        snapshot_after_close = not is_trading_day(current_market_time.date())
+        if universe_entries:
+            snapshot_time = pd.to_datetime(
+                universe_entries[0].get("refreshed_at"), errors="coerce"
+            )
+            snapshot_after_close = snapshot_after_close or bool(
+                pd.notna(snapshot_time)
+                and snapshot_time.time() >= DAILY_BAR_READY_TIME
+            )
+        page_limit = int(os.getenv("PAGE_SCAN_ETF_LIMIT", "80") or 80)
+        pool = select_scan_pool(
+            universe_entries,
+            minimum_spot_amount=(
+                min_daily_amount_wan * 10_000.0 if snapshot_after_close else None
+            ),
+            max_count=page_limit or None,
+            always_include=held_codes,
+        )
+        if not pool:
+            pool = [dict(entry) for entry in DEFAULT_ETF_POOL]
+            st.warning("全市场目录暂不可用，已安全回退到默认19只ETF。")
+        eligible_total = sum(bool(row.get("eligible")) for row in universe_entries)
+        st.caption(
+            f"目录 {len(universe_entries)} 只 · 基础合格 {eligible_total} 只 · "
+            f"本页扫描 {len(pool)} 只"
+        )
+        if universe_status:
+            if universe_status.get("status") == "success":
+                st.caption(
+                    f"来源：{universe_status.get('source') or '—'} · "
+                    f"更新：{universe_status.get('refreshed_at') or '—'}"
+                )
+            else:
+                st.warning("最近一次目录刷新失败，正在沿用上一份有效快照。")
+        if st.button("立即刷新全市场目录", width="stretch"):
+            universe_entries, universe_status = refresh_universe(
+                db, now=shanghai_now()
+            )
+            st.session_state.pop("rotation_auto_scan_key", None)
+            _set_flash("success", "ETF全市场目录刷新流程已完成")
+            st.rerun()
+    elif pool_mode == "默认19只备用池":
+        pool = [dict(entry) for entry in DEFAULT_ETF_POOL]
+        st.caption("仅用于全市场目录不可用时的安全备用池。")
     else:
         custom_text = st.text_area(
             "ETF代码",
             value="510300, 510500, 513100, 518880, 511010",
             help="可用逗号、空格或换行分隔。持仓代码应始终保留在候选池中。",
         )
-        pool_key = _parse_codes(custom_text)
-        st.caption(f"识别到 {len(pool_key)} 个有效代码")
+        custom_codes = _parse_codes(custom_text)
+        pool = [{"code": code, "name": f"ETF {code}", "category": "other"} for code in custom_codes]
+        st.caption(f"识别到 {len(pool)} 个有效代码")
+
+    pool_items = _pool_items(pool)
+    pool_key = tuple(row[0] for row in pool_items)
 
     current_config = RotationConfig(
         max_positions=max_positions,
@@ -349,7 +462,9 @@ with st.sidebar:
     )
 
     run_scan = st.button("立即重新扫描（可选）", width="stretch")
-    st.caption("页面打开、参数变化，或缓存超过15分钟后的下一次交互会自动扫描。")
+    st.caption(
+        "页面打开或参数变化时自动扫描；全市场模式缓存6小时，其他模式缓存15分钟。"
+    )
 
     with st.expander("账户备份与重置"):
         if db.is_cloud_persistent:
@@ -392,6 +507,7 @@ with st.sidebar:
                 st.session_state.pop("rotation_scan_result", None)
                 st.session_state.pop("rotation_auto_scan_key", None)
                 st.session_state.pop("rotation_scan_checked_at", None)
+                st.session_state.pop("rotation_signal_batch_id", None)
                 _set_flash("success", "模拟账户已清空")
                 st.rerun()
             st.error("模拟账户重置失败")
@@ -407,7 +523,7 @@ _show_flash()
 
 
 scan_key = (
-    pool_key,
+    pool_items,
     max_positions,
     cash_reserve,
     max_position_weight,
@@ -416,6 +532,32 @@ scan_key = (
     correlation_threshold,
 )
 scan_now = shanghai_now()
+current_config_hash = config_hash(current_config)
+
+if (
+    pool_mode == "自动全市场ETF池"
+    and not run_scan
+    and (
+        st.session_state.get("rotation_scan_result") is None
+        or st.session_state.get("rotation_auto_scan_key") != scan_key
+    )
+):
+    stored_batch = db.get_latest_signal_batch(config_hash=current_config_hash)
+    if stored_batch:
+        try:
+            stored_result = deserialize_scan_result(stored_batch["payload"])
+            stored_age = (
+                scan_now.date() - stored_result.as_of
+            ).days if stored_result.as_of else 999
+            if 0 <= stored_age <= 7:
+                st.session_state["rotation_scan_result"] = stored_result
+                st.session_state["rotation_scan_config"] = current_config
+                st.session_state["rotation_auto_scan_key"] = scan_key
+                st.session_state["rotation_signal_batch_id"] = stored_batch["batch_id"]
+                st.session_state["rotation_scan_checked_at"] = scan_now.isoformat()
+        except (TypeError, ValueError):
+            pass
+
 last_checked_raw = st.session_state.get("rotation_scan_checked_at")
 try:
     last_checked = datetime.fromisoformat(last_checked_raw) if last_checked_raw else None
@@ -425,7 +567,8 @@ if last_checked is not None:
     last_checked = shanghai_now(last_checked)
 scan_cache_expired = (
     last_checked is None
-    or (scan_now - last_checked).total_seconds() >= 900
+    or (scan_now - last_checked).total_seconds()
+    >= (21_600 if pool_mode == "自动全市场ETF池" else 900)
 )
 auto_scan_due = (
     st.session_state.get("rotation_scan_result") is None
@@ -442,9 +585,47 @@ if run_scan or auto_scan_due:
         with st.spinner("正在自动读取完整日线、计算目标组合和调仓差额……"):
             try:
                 result = _cached_scan(*scan_key)
+                signal_pool = pool
+                if (
+                    pool_mode == "自动全市场ETF池"
+                    and result.scanned_count == 0
+                ):
+                    signal_pool = [dict(entry) for entry in DEFAULT_ETF_POOL]
+                    fallback_items = _pool_items(signal_pool)
+                    result = _cached_scan(
+                        fallback_items,
+                        max_positions,
+                        cash_reserve,
+                        max_position_weight,
+                        min_avg_amount_wan * 10_000.0,
+                        min_daily_amount_wan * 10_000.0,
+                        correlation_threshold,
+                    )
+                    st.warning(
+                        "全市场历史行情源本次不可用，信号已安全回退到默认19只备用池。"
+                    )
+                if result.as_of is None:
+                    raise RuntimeError("没有获得任何可用的完整日线，未保存信号批次")
+                signal_batch_id = batch_id_for(result, current_config, signal_pool)
+                saved = db.save_signal_batch(
+                    batch_id=signal_batch_id,
+                    signal_date=result.as_of.isoformat() if result.as_of else "",
+                    config_hash=current_config_hash,
+                    pool_hash=pool_hash(signal_pool),
+                    payload=serialize_scan_result(result),
+                    scan_count=result.scanned_count,
+                    error_count=len(result.errors),
+                    universe_run_id=(
+                        str(universe_entries[0].get("run_id"))
+                        if universe_entries else None
+                    ),
+                )
+                if not saved:
+                    raise RuntimeError("扫描完成，但信号批次保存失败")
                 st.session_state["rotation_scan_result"] = result
                 st.session_state["rotation_scan_config"] = current_config
                 st.session_state["rotation_auto_scan_key"] = scan_key
+                st.session_state["rotation_signal_batch_id"] = signal_batch_id
             except Exception as error:
                 st.error(f"自动扫描失败：{error}")
             finally:
@@ -455,6 +636,7 @@ result = st.session_state.get("rotation_scan_result")
 scan_config: RotationConfig = st.session_state.get(
     "rotation_scan_config", RotationConfig()
 )
+current_batch_id = st.session_state.get("rotation_signal_batch_id")
 
 plan: RebalancePlan | None = None
 if result is not None and portfolio is not None:
@@ -569,7 +751,18 @@ with tab_rebalance:
 
             with st.expander("执行全部模拟调仓", expanded=plan.actionable_count > 0):
                 execution_date = shanghai_now().date()
+                batch_execution = (
+                    db.get_execution_batch(current_batch_id)
+                    if current_batch_id else None
+                )
+                batch_completed = bool(
+                    batch_execution and batch_execution.get("status") == "completed"
+                )
                 st.write(f"模拟成交日期：{execution_date.isoformat()}")
+                if current_batch_id:
+                    st.caption(f"信号批次：{current_batch_id[:12]}")
+                if batch_completed:
+                    st.success("该信号批次已经执行，数据库防重锁已禁止再次成交。")
                 slippage_bps = st.number_input(
                     "单边滑点（基点）", min_value=0, max_value=100, value=10, step=5
                 )
@@ -583,6 +776,8 @@ with tab_rebalance:
                     disabled=(
                         plan.actionable_count == 0
                         or not current_window.can_confirm
+                        or not current_batch_id
+                        or batch_completed
                     ),
                 ):
                     execution_plan = build_rebalance_plan(
@@ -597,22 +792,48 @@ with tab_rebalance:
                     codes = actionable["code"].astype(str).tolist()
                     quotes = fetch_multi_etf_info(codes) if codes else {}
                     live_prices = {}
+                    book_depths = {}
+                    quote_errors = {}
+                    quote_check_time = shanghai_now()
                     for _, order in actionable.iterrows():
                         code = str(order["code"])
-                        price = realtime_price_for_action(
+                        validation = validate_realtime_quote(
                             quotes.get(code),
                             str(order["action"]),
                             execution_date,
+                            requested_shares=0,
+                            reference_price=float(order["reference_price"]),
+                            now=quote_check_time,
                         )
-                        if price is not None:
-                            live_prices[code] = price
+                        if validation.valid and validation.price is not None:
+                            live_prices[code] = validation.price
+                            if validation.available_shares is not None:
+                                book_depths[code] = validation.available_shares
+                        else:
+                            quote_errors[code] = validation.reason
                     execution_plan = reprice_rebalance_plan(
                         execution_plan,
                         portfolio,
                         live_prices,
                         trade_date=execution_date.isoformat(),
                         minimum_coverage=0.80,
+                        available_shares=book_depths,
                     )
+                    execution_plan.errors.update(quote_errors)
+                    if execution_plan.actionable_count == 0:
+                        for error in execution_plan.errors.values():
+                            st.error(error)
+                        st.stop()
+
+                    claimed, claim_status = db.claim_execution_batch(
+                        current_batch_id
+                    )
+                    if not claimed:
+                        st.error(
+                            "该信号批次已被执行或正在执行，已阻止重复成交"
+                            f"（{claim_status}）。"
+                        )
+                        st.stop()
                     execution = execute_rebalance_plan(
                         portfolio,
                         execution_plan,
@@ -620,15 +841,34 @@ with tab_rebalance:
                         slippage_pct=slippage_bps / 10_000.0,
                     )
                     if execution.trades:
-                        _save_account(db, portfolio, result.as_of)
-                        st.session_state["paper_portfolio"] = portfolio
-                        message = f"已完成 {len(execution.trades)} 笔模拟成交"
-                        if execution.errors:
-                            message += f"，{len(execution.errors)} 笔未成交"
-                        if execution_plan.errors:
-                            message += f"，{len(execution_plan.errors)} 项被风控跳过"
-                        _set_flash("success", message)
-                        st.rerun()
+                        try:
+                            _save_account(db, portfolio, result.as_of)
+                            db.complete_execution_batch(
+                                current_batch_id,
+                                "completed",
+                                trade_count=len(execution.trades),
+                                message="模拟成交已保存",
+                            )
+                            st.session_state["paper_portfolio"] = portfolio
+                            message = f"已完成 {len(execution.trades)} 笔模拟成交"
+                            if execution.errors:
+                                message += f"，{len(execution.errors)} 笔未成交"
+                            if execution_plan.errors:
+                                message += f"，{len(execution_plan.errors)} 项被风控跳过"
+                            _set_flash("success", message)
+                            st.rerun()
+                        except RuntimeError as error:
+                            db.complete_execution_batch(
+                                current_batch_id, "failed", message=str(error)
+                            )
+                            st.session_state["paper_portfolio"] = db.load()
+                            st.error(str(error))
+                    else:
+                        db.complete_execution_batch(
+                            current_batch_id,
+                            "blocked",
+                            message="没有订单通过最终执行门禁",
+                        )
                     if execution.errors:
                         for error in execution.errors.values():
                             st.error(error)
@@ -747,6 +987,55 @@ with tab_trades:
 
 
 with tab_universe:
+    st.subheader("自动维护的全市场ETF目录")
+    universe_cols = st.columns(4)
+    universe_cols[0].metric("目录总数", f"{len(universe_entries)} 只")
+    universe_cols[1].metric(
+        "基础合格",
+        f"{sum(bool(row.get('eligible')) for row in universe_entries)} 只",
+    )
+    universe_cols[2].metric("本次扫描", f"{len(pool)} 只")
+    universe_cols[3].metric(
+        "目录状态",
+        "正常" if universe_status and universe_status.get("status") == "success" else "沿用快照",
+    )
+    if universe_entries:
+        universe_frame = pd.DataFrame(universe_entries)
+        universe_frame["状态"] = universe_frame["eligible"].map(
+            {1: "基础合格", 0: "排除", True: "基础合格", False: "排除"}
+        )
+        st.dataframe(
+            universe_frame.rename(
+                columns={
+                    "code": "代码",
+                    "name": "名称",
+                    "exchange": "交易所",
+                    "category": "资产类别",
+                    "price": "最新价",
+                    "amount": "成交额",
+                    "listed_date": "上市日期",
+                    "exclusion_reason": "排除原因",
+                    "source": "来源",
+                    "refreshed_at": "更新时间",
+                }
+            )[
+                [
+                    "代码", "名称", "交易所", "资产类别", "状态", "最新价",
+                    "成交额", "上市日期", "排除原因", "来源", "更新时间",
+                ]
+            ],
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "最新价": st.column_config.NumberColumn(format="%.4f"),
+                "成交额": st.column_config.NumberColumn(format="¥%.0f"),
+            },
+        )
+    else:
+        st.warning("尚无有效全市场ETF目录，当前使用默认19只备用池。")
+
+    st.divider()
+    st.subheader("策略扫描结果")
     if result is None:
         st.info("完成一次扫描后查看候选ETF排名和淘汰原因。")
     elif result.rankings.empty:
@@ -812,7 +1101,7 @@ with tab_backtest:
         step=5,
         key="backtest_slippage",
     )
-    default_map = {entry["code"]: entry["name"] for entry in DEFAULT_ETF_POOL}
+    default_map = {row["code"]: row.get("name", "") for row in pool}
     benchmark_codes = list(pool_key)
     benchmark_default = benchmark_codes.index("510300") if "510300" in benchmark_codes else 0
     benchmark_code = backtest_col6.selectbox(
@@ -828,7 +1117,7 @@ with tab_backtest:
         width="stretch",
         disabled=not bool(pool_key),
     )
-    st.caption("默认19只ETF、每日信号和一年区间通常需要数十秒；相同参数会使用一小时缓存。")
+    st.caption("ETF数量越多，回测耗时越长；相同参数会使用一小时缓存。")
     if run_backtest:
         if backtest_start >= backtest_end:
             st.error("回测开始日期必须早于结束日期。")
@@ -836,7 +1125,7 @@ with tab_backtest:
             with st.spinner("正在下载历史行情并逐交易日回放策略，请稍候……"):
                 try:
                     bundle = _cached_backtest(
-                        pool_key,
+                        pool_items,
                         backtest_start.isoformat(),
                         backtest_end.isoformat(),
                         float(backtest_capital),
@@ -885,7 +1174,7 @@ with tab_backtest:
 with st.expander("策略与模拟交易规则", expanded=False):
     st.markdown(
         """
-        - **唯一信号源**：本项目成功读取的最新完整日线；默认19只ETF，也可自定义候选池。
+        - **唯一信号源**：本项目成功读取的最新完整日线；默认自动维护全市场ETF目录，也可使用备用池或自定义池。
         - **买入**：进入目标组合后，按总资产目标权重和100份交易单位计算。
         - **卖出**：动态止损、移动止盈、趋势、排名和时间退出；卖出先于买入。
         - **费用模型**：ETF不计股票印花税；默认佣金万三、最低5元；批量模拟默认单边滑点0.1%。

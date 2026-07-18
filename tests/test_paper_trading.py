@@ -129,6 +129,30 @@ def test_reprice_plan_freezes_all_orders_when_quote_coverage_is_low():
     assert "realtime_coverage" in repriced.errors
 
 
+def test_reprice_plan_freezes_order_beyond_book_depth():
+    scan = _scan()
+    pm = PortfolioManager(initial_capital=100_000)
+    trade_date = scan.as_of.isoformat()
+    plan = build_rebalance_plan(pm, scan, trade_date=trade_date)
+    prices = {
+        str(row["code"]): float(row["reference_price"])
+        for _, row in plan.orders.iterrows()
+        if row["action"] in {"buy", "sell"}
+    }
+    depths = {code: 0 for code in prices}
+
+    repriced = reprice_rebalance_plan(
+        plan,
+        pm,
+        prices,
+        trade_date=trade_date,
+        available_shares=depths,
+    )
+
+    assert repriced.actionable_count == 0
+    assert any("挂单量" in error for error in repriced.errors.values())
+
+
 def test_same_day_bought_shares_are_not_sellable():
     pm = PortfolioManager(initial_capital=100_000)
     assert pm.buy("510300", 4.0, 1000, trade_date="2025-07-01") is not None

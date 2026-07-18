@@ -7,8 +7,10 @@ key only to make singleton upserts portable across both database engines.
 
 from __future__ import annotations
 
+import json
 import math
 import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    Text,
     UniqueConstraint,
     create_engine,
     delete,
@@ -133,6 +136,69 @@ EQUITY_SNAPSHOTS = Table(
     Column("unrealized_pnl", Float, nullable=False),
     Column("total_return", Float, nullable=False),
     Column("created_at", String(32), nullable=False),
+)
+
+ETF_UNIVERSE_RUNS = Table(
+    "etf_universe_runs",
+    METADATA,
+    Column("run_id", String(64), primary_key=True),
+    Column("status", String(16), nullable=False),
+    Column("source", String(120), nullable=False, default=""),
+    Column("refreshed_at", String(40), nullable=False),
+    Column("total_count", Integer, nullable=False, default=0),
+    Column("eligible_count", Integer, nullable=False, default=0),
+    Column("error", Text, nullable=False, default=""),
+)
+
+ETF_UNIVERSE = Table(
+    "etf_universe",
+    METADATA,
+    Column("code", String(12), primary_key=True),
+    Column("run_id", String(64), nullable=False, index=True),
+    Column("name", String(160), nullable=False),
+    Column("exchange", String(16), nullable=False),
+    Column("category", String(40), nullable=False),
+    Column("price", Float),
+    Column("amount", Float),
+    Column("listed_date", String(16)),
+    Column("eligible", Integer, nullable=False),
+    Column("exclusion_reason", String(500), nullable=False, default=""),
+    Column("source", String(120), nullable=False),
+    Column("refreshed_at", String(40), nullable=False),
+)
+
+SIGNAL_BATCHES = Table(
+    "paper_signal_batches",
+    METADATA,
+    Column("batch_id", String(64), primary_key=True),
+    Column("account_id", String(64), nullable=False, index=True),
+    Column("signal_date", String(16), nullable=False),
+    Column("config_hash", String(64), nullable=False),
+    Column("pool_hash", String(64), nullable=False),
+    Column("universe_run_id", String(64)),
+    Column("created_at", String(40), nullable=False),
+    Column("scan_count", Integer, nullable=False),
+    Column("error_count", Integer, nullable=False),
+    Column("payload_json", Text, nullable=False),
+    UniqueConstraint(
+        "account_id",
+        "signal_date",
+        "config_hash",
+        "pool_hash",
+        name="uq_paper_signal_batch_scope",
+    ),
+)
+
+EXECUTION_BATCHES = Table(
+    "paper_execution_batches",
+    METADATA,
+    Column("batch_id", String(64), primary_key=True),
+    Column("account_id", String(64), nullable=False, index=True),
+    Column("status", String(16), nullable=False),
+    Column("claimed_at", String(40), nullable=False),
+    Column("completed_at", String(40)),
+    Column("trade_count", Integer, nullable=False, default=0),
+    Column("message", String(500), nullable=False, default=""),
 )
 
 
@@ -469,6 +535,238 @@ class PortfolioDB:
         except SQLAlchemyError:
             return []
 
+    def replace_etf_universe(
+        self,
+        entries: list[dict],
+        source: str,
+        refreshed_at: str,
+    ) -> str:
+        """Atomically replace the latest valid full-market ETF snapshot."""
+
+        if not entries:
+            raise ValueError("ETF候选池不能为空")
+        run_id = uuid.uuid4().hex
+        rows = [
+            {
+                "code": str(row["code"]),
+                "run_id": run_id,
+                "name": str(row.get("name") or row["code"]),
+                "exchange": str(row.get("exchange") or ""),
+                "category": str(row.get("category") or "other"),
+                "price": row.get("price"),
+                "amount": row.get("amount"),
+                "listed_date": row.get("listed_date"),
+                "eligible": int(bool(row.get("eligible"))),
+                "exclusion_reason": str(row.get("exclusion_reason") or ""),
+                "source": str(row.get("source") or source),
+                "refreshed_at": str(row.get("refreshed_at") or refreshed_at),
+            }
+            for row in entries
+        ]
+        with self._engine.begin() as conn:
+            conn.execute(delete(ETF_UNIVERSE))
+            conn.execute(insert(ETF_UNIVERSE), rows)
+            conn.execute(
+                insert(ETF_UNIVERSE_RUNS).values(
+                    run_id=run_id,
+                    status="success",
+                    source=source,
+                    refreshed_at=refreshed_at,
+                    total_count=len(rows),
+                    eligible_count=sum(row["eligible"] for row in rows),
+                    error="",
+                )
+            )
+        return run_id
+
+    def record_universe_failure(self, error: str, refreshed_at: str) -> str:
+        """Record refresh failure without destroying the last valid snapshot."""
+
+        run_id = uuid.uuid4().hex
+        with self._engine.begin() as conn:
+            conn.execute(
+                insert(ETF_UNIVERSE_RUNS).values(
+                    run_id=run_id,
+                    status="failed",
+                    source="",
+                    refreshed_at=refreshed_at,
+                    total_count=0,
+                    eligible_count=0,
+                    error=str(error)[:4000],
+                )
+            )
+        return run_id
+
+    def get_etf_universe(self, eligible_only: bool = False) -> list[dict]:
+        """Return the last valid ETF catalogue at one row per code."""
+
+        try:
+            statement = select(ETF_UNIVERSE).order_by(
+                ETF_UNIVERSE.c.eligible.desc(),
+                ETF_UNIVERSE.c.amount.desc(),
+                ETF_UNIVERSE.c.code,
+            )
+            if eligible_only:
+                statement = statement.where(ETF_UNIVERSE.c.eligible == 1)
+            with self._engine.connect() as conn:
+                rows = conn.execute(statement).mappings().all()
+            return [dict(row) for row in rows]
+        except SQLAlchemyError:
+            return []
+
+    def get_universe_status(self) -> dict | None:
+        try:
+            with self._engine.connect() as conn:
+                row = conn.execute(
+                    select(ETF_UNIVERSE_RUNS)
+                    .order_by(ETF_UNIVERSE_RUNS.c.refreshed_at.desc())
+                    .limit(1)
+                ).mappings().first()
+            return dict(row) if row else None
+        except SQLAlchemyError:
+            return None
+
+    def save_signal_batch(
+        self,
+        batch_id: str,
+        signal_date: str,
+        config_hash: str,
+        pool_hash: str,
+        payload: dict,
+        scan_count: int,
+        error_count: int,
+        universe_run_id: str | None = None,
+    ) -> bool:
+        """Upsert one deterministic signal batch without creating duplicates."""
+
+        values = {
+            "batch_id": batch_id,
+            "account_id": self._account_id,
+            "signal_date": signal_date,
+            "config_hash": config_hash,
+            "pool_hash": pool_hash,
+            "universe_run_id": universe_run_id,
+            "created_at": _now(),
+            "scan_count": int(scan_count),
+            "error_count": int(error_count),
+            "payload_json": json.dumps(payload, ensure_ascii=False),
+        }
+        try:
+            with self._engine.begin() as conn:
+                exists = conn.execute(
+                    select(SIGNAL_BATCHES.c.batch_id).where(
+                        SIGNAL_BATCHES.c.batch_id == batch_id
+                    )
+                ).first()
+                if exists:
+                    conn.execute(
+                        SIGNAL_BATCHES.update()
+                        .where(SIGNAL_BATCHES.c.batch_id == batch_id)
+                        .values(**{key: value for key, value in values.items() if key != "batch_id"})
+                    )
+                else:
+                    conn.execute(insert(SIGNAL_BATCHES).values(**values))
+            return True
+        except SQLAlchemyError:
+            return False
+
+    def get_latest_signal_batch(
+        self,
+        config_hash: str | None = None,
+        pool_hash: str | None = None,
+    ) -> dict | None:
+        try:
+            statement = select(SIGNAL_BATCHES).where(
+                SIGNAL_BATCHES.c.account_id == self._account_id
+            )
+            if config_hash:
+                statement = statement.where(SIGNAL_BATCHES.c.config_hash == config_hash)
+            if pool_hash:
+                statement = statement.where(SIGNAL_BATCHES.c.pool_hash == pool_hash)
+            statement = statement.order_by(
+                SIGNAL_BATCHES.c.signal_date.desc(),
+                SIGNAL_BATCHES.c.created_at.desc(),
+            ).limit(1)
+            with self._engine.connect() as conn:
+                row = conn.execute(statement).mappings().first()
+            if not row:
+                return None
+            result = dict(row)
+            result["payload"] = json.loads(result.pop("payload_json"))
+            return result
+        except (SQLAlchemyError, json.JSONDecodeError):
+            return None
+
+    def claim_execution_batch(self, batch_id: str) -> tuple[bool, str]:
+        """Atomically prevent double execution of a signal batch."""
+
+        try:
+            with self._engine.begin() as conn:
+                row = conn.execute(
+                    select(EXECUTION_BATCHES.c.status).where(
+                        EXECUTION_BATCHES.c.batch_id == batch_id
+                    )
+                ).first()
+                if row and row[0] in {"executing", "completed"}:
+                    return False, str(row[0])
+                if row:
+                    conn.execute(
+                        EXECUTION_BATCHES.update()
+                        .where(EXECUTION_BATCHES.c.batch_id == batch_id)
+                        .values(status="executing", claimed_at=_now(), message="")
+                    )
+                else:
+                    conn.execute(
+                        insert(EXECUTION_BATCHES).values(
+                            batch_id=batch_id,
+                            account_id=self._account_id,
+                            status="executing",
+                            claimed_at=_now(),
+                            trade_count=0,
+                            message="",
+                        )
+                    )
+            return True, "executing"
+        except SQLAlchemyError:
+            return False, "database_error"
+
+    def complete_execution_batch(
+        self,
+        batch_id: str,
+        status: str,
+        trade_count: int = 0,
+        message: str = "",
+    ) -> bool:
+        if status not in {"completed", "blocked", "failed"}:
+            raise ValueError("unsupported execution status")
+        try:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    EXECUTION_BATCHES.update()
+                    .where(EXECUTION_BATCHES.c.batch_id == batch_id)
+                    .values(
+                        status=status,
+                        completed_at=_now(),
+                        trade_count=max(0, int(trade_count)),
+                        message=str(message)[:500],
+                    )
+                )
+            return bool(result.rowcount)
+        except SQLAlchemyError:
+            return False
+
+    def get_execution_batch(self, batch_id: str) -> dict | None:
+        try:
+            with self._engine.connect() as conn:
+                row = conn.execute(
+                    select(EXECUTION_BATCHES).where(
+                        EXECUTION_BATCHES.c.batch_id == batch_id
+                    )
+                ).mappings().first()
+            return dict(row) if row else None
+        except SQLAlchemyError:
+            return None
+
     def record_snapshot(
         self,
         pm: PortfolioManager,
@@ -642,7 +940,14 @@ class PortfolioDB:
 
         try:
             with self._engine.begin() as conn:
-                for table in (EQUITY_SNAPSHOTS, TRADES, HOLDINGS, PORTFOLIO_STATE):
+                for table in (
+                    EXECUTION_BATCHES,
+                    SIGNAL_BATCHES,
+                    EQUITY_SNAPSHOTS,
+                    TRADES,
+                    HOLDINGS,
+                    PORTFOLIO_STATE,
+                ):
                     conn.execute(
                         delete(table).where(table.c.account_id == self._account_id)
                     )

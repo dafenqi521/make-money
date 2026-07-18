@@ -23,8 +23,11 @@ app.py
   │    └─ src/strategy/etf_rotation.py
   ├─ src/engine/paper_trading.py
   │    └─ src/engine/portfolio.py
+  ├─ src/engine/etf_universe.py
+  ├─ src/engine/signal_batch.py
   ├─ src/engine/backtest.py
-  └─ src/data/portfolio_db.py
+  ├─ src/data/portfolio_db.py
+  └─ src/jobs/daily_signal.py
 ```
 
 ## 验证
@@ -42,6 +45,10 @@ python -m streamlit run app.py
 - 北京时间15:05前不得把当日动态K线视为完整日线；
 - 模拟确认只允许在下一开市日09:35–11:25或13:05–14:50，首选09:35–10:00；
 - 确认时必须校验当日实时盘口日期，买入使用卖一、卖出使用买一优先，覆盖率低于80%冻结整单；
+- 盘口必须不超过30秒且深度覆盖订单；涨跌停或偏离信号价超过3%时冻结；
+- 全市场目录刷新失败必须保留上一份有效快照，默认19只只能作为备用；
+- 同一信号批次只能完成一次模拟执行；
+- 后台任务只生成信号和通知，不得绕过人工确认或连接券商；
 - ETF费用模型不含股票印花税；
 - 买卖数量按100份取整，同日新买份额不可卖；
 - 项目只保留一个模拟账户；SQLite用于本地，云端可用DATABASE_URL切换PostgreSQL；
