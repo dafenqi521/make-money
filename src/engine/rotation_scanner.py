@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Callable, Iterable
 
 import pandas as pd
 
 from src.data.fetcher import fetch_etf_hist, fetch_multi_etf_info
+from src.engine.trading_schedule import drop_incomplete_daily_bar
 from src.strategy.etf_rotation import (
     RotationConfig,
     classify_etf,
@@ -102,6 +103,7 @@ def scan_etf_pool(
     history_fetcher: Callable[[str], pd.DataFrame] = fetch_etf_hist,
     quote_fetcher: Callable[[list[str]], dict[str, dict]] = fetch_multi_etf_info,
     max_workers: int = 8,
+    now: datetime | None = None,
 ) -> RotationScanResult:
     """Fetch, rank, and allocate a local ETF candidate pool.
 
@@ -127,7 +129,10 @@ def scan_etf_pool(
                 history = future.result()
                 if history is None or history.empty:
                     raise ValueError("历史行情为空")
-                histories[code] = history.copy()
+                history = drop_incomplete_daily_bar(history, now=now)
+                if history.empty:
+                    raise ValueError("没有可用的完整日线行情")
+                histories[code] = history
             except Exception as error:
                 errors[code] = str(error)
 

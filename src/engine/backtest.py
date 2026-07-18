@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Callable, Iterable, Mapping
 
 import numpy as np
@@ -15,9 +15,11 @@ from src.engine.paper_trading import (
     RebalancePlan,
     build_rebalance_plan,
     execute_rebalance_plan,
+    reprice_rebalance_plan,
 )
-from src.engine.portfolio import LOT_SIZE, PortfolioManager
+from src.engine.portfolio import PortfolioManager
 from src.engine.rotation_scanner import RotationScanResult, normalise_pool
+from src.engine.trading_schedule import drop_incomplete_daily_bar
 from src.strategy.etf_rotation import RotationConfig, rank_etfs, select_targets
 
 
@@ -120,6 +122,7 @@ def fetch_backtest_histories(
     history_fetcher: Callable[..., pd.DataFrame] = fetch_etf_hist,
     max_workers: int = 8,
     warmup_calendar_days: int = 260,
+    now: datetime | None = None,
 ) -> HistoricalDataResult:
     """Fetch a bounded window including enough pre-start indicator warmup."""
 
@@ -153,6 +156,7 @@ def fetch_backtest_histories(
                 code = futures[future]
                 try:
                     frame = _normalise_market_history(future.result())
+                    frame = drop_incomplete_daily_bar(frame, now=now)
                     frame = frame[
                         (frame["date"].dt.date >= fetch_start)
                         & (frame["date"].dt.date <= end_date)
@@ -233,68 +237,6 @@ def _prices_on(
         if pd.notna(value) and float(value) > 0:
             prices[code] = float(value)
     return prices
-
-
-def _reprice_plan_at_open(
-    plan: RebalancePlan,
-    portfolio: PortfolioManager,
-    open_prices: Mapping[str, float],
-    execution_date: str,
-) -> RebalancePlan:
-    """Use next-session opens for sizing/fills without changing prior signals."""
-
-    orders = plan.orders.copy()
-    errors = dict(plan.errors)
-    portfolio.update_prices(
-        {code: price for code, price in open_prices.items() if code in portfolio.holdings}
-    )
-    equity_at_open = portfolio.total_equity
-    for index, order in orders.iterrows():
-        original_action = str(order["action"])
-        if original_action not in {"buy", "sell"}:
-            continue
-        code = str(order["code"])
-        price = float(open_prices.get(code, 0.0))
-        if price <= 0:
-            orders.loc[index, ["action", "delta_shares", "estimated_amount"]] = [
-                "hold",
-                0,
-                0.0,
-            ]
-            orders.loc[index, "target_shares"] = int(order["current_shares"])
-            orders.loc[index, "reason"] = "次日开盘价缺失，未模拟成交"
-            errors[code] = "次日开盘价缺失"
-            continue
-
-        current_shares = (
-            portfolio.holdings[code].shares if code in portfolio.holdings else 0
-        )
-        target_weight = max(0.0, float(order["target_weight"]))
-        target_shares = int(
-            np.floor(equity_at_open * target_weight / (price * LOT_SIZE)) * LOT_SIZE
-        )
-        if target_weight == 0:
-            target_shares = 0
-        delta = target_shares - current_shares
-        if original_action == "buy" and delta <= 0:
-            delta = 0
-            target_shares = current_shares
-        elif original_action == "sell" and delta >= 0:
-            delta = 0
-            target_shares = current_shares
-        elif delta < 0:
-            available = portfolio.available_shares(code, execution_date)
-            delta = -min(abs(delta), available)
-            target_shares = current_shares + delta
-
-        action = "buy" if delta > 0 else "sell" if delta < 0 else "hold"
-        orders.loc[index, "reference_price"] = price
-        orders.loc[index, "current_shares"] = current_shares
-        orders.loc[index, "target_shares"] = target_shares
-        orders.loc[index, "delta_shares"] = delta
-        orders.loc[index, "estimated_amount"] = abs(delta) * price
-        orders.loc[index, "action"] = action
-    return RebalancePlan(orders, errors, plan.as_of, equity_at_open)
 
 
 def _performance_metrics(
@@ -495,11 +437,13 @@ def run_rotation_backtest(
         execution_date = trading_date.date().isoformat()
         open_prices = _prices_on(normalised, trading_date, "open")
         if pending_plan is not None:
-            execution_plan = _reprice_plan_at_open(
+            execution_plan = reprice_rebalance_plan(
                 pending_plan,
                 portfolio,
                 open_prices,
                 execution_date,
+                minimum_coverage=0.0,
+                missing_price_reason="次日开盘价缺失，未模拟成交",
             )
             execute_rebalance_plan(
                 portfolio,

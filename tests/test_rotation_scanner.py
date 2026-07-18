@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 
@@ -65,3 +67,17 @@ def test_scan_failure_is_explicit_and_not_ranked():
     assert "510300" in result.errors
     assert "510300" not in set(result.rankings["code"])
 
+
+def test_scan_does_not_rank_on_an_incomplete_current_day_bar():
+    history = _history("510300")
+    latest = history["date"].max()
+
+    result = scan_etf_pool(
+        ["510300"],
+        config=RotationConfig(min_avg_amount=1, min_daily_amount=1),
+        history_fetcher=lambda code: history,
+        quote_fetcher=lambda codes: {},
+        now=datetime.combine(latest.date(), datetime.min.time()).replace(hour=14),
+    )
+
+    assert result.as_of == history["date"].sort_values().iloc[-2].date()

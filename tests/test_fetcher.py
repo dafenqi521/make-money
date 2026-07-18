@@ -377,6 +377,8 @@ def test_fetch_multi_etf_info():
     assert result["510300"]["name"] == "沪深300ETF"
     assert result["510050"]["name"] == "上证50ETF"
     assert result["510300"]["pe_ttm"] == 300.45
+    assert result["510300"]["date"] == "2026-06-26"
+    assert result["510300"]["time"] == "15:00:03"
 
 
 # ---------------------------------------------------------------------------

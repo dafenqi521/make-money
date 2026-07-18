@@ -7,7 +7,11 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-from src.engine.paper_trading import build_rebalance_plan, execute_rebalance_plan
+from src.engine.paper_trading import (
+    build_rebalance_plan,
+    execute_rebalance_plan,
+    reprice_rebalance_plan,
+)
 from src.engine.portfolio import PortfolioManager
 from src.engine.rotation_scanner import RotationScanResult, scan_etf_pool
 from src.strategy.etf_rotation import RotationConfig
@@ -87,6 +91,42 @@ def test_execute_plan_applies_slippage_and_updates_account():
         )
         assert trade.price == reference * 1.001
         assert trade.shares % 100 == 0
+
+
+def test_reprice_plan_uses_live_prices_and_preserves_lot_sizing():
+    scan = _scan()
+    pm = PortfolioManager(initial_capital=100_000)
+    trade_date = scan.as_of.isoformat()
+    plan = build_rebalance_plan(pm, scan, trade_date=trade_date)
+    live_prices = {
+        str(row["code"]): float(row["reference_price"]) * 1.02
+        for _, row in plan.orders.iterrows()
+        if row["action"] in {"buy", "sell"}
+    }
+
+    repriced = reprice_rebalance_plan(
+        plan, pm, live_prices, trade_date=trade_date
+    )
+
+    actionable = repriced.orders[repriced.orders["action"].isin(["buy", "sell"])]
+    assert not actionable.empty
+    assert (actionable["delta_shares"].abs() % 100 == 0).all()
+    for _, row in actionable.iterrows():
+        assert row["reference_price"] == live_prices[str(row["code"])]
+
+
+def test_reprice_plan_freezes_all_orders_when_quote_coverage_is_low():
+    scan = _scan()
+    pm = PortfolioManager(initial_capital=100_000)
+    trade_date = scan.as_of.isoformat()
+    plan = build_rebalance_plan(pm, scan, trade_date=trade_date)
+
+    repriced = reprice_rebalance_plan(
+        plan, pm, {}, trade_date=trade_date, minimum_coverage=0.80
+    )
+
+    assert repriced.actionable_count == 0
+    assert "realtime_coverage" in repriced.errors
 
 
 def test_same_day_bought_shares_are_not_sellable():

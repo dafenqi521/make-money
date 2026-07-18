@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Mapping
 
 import numpy as np
 import pandas as pd
@@ -316,6 +317,117 @@ def build_rebalance_plan(
             ["_priority", "estimated_amount"], ascending=[True, False]
         ).drop(columns="_priority").reset_index(drop=True)
     return RebalancePlan(orders, errors, scan.as_of, account_equity)
+
+
+def reprice_rebalance_plan(
+    plan: RebalancePlan,
+    portfolio: PortfolioManager,
+    prices: Mapping[str, float],
+    trade_date: str,
+    minimum_coverage: float = 0.80,
+    missing_price_reason: str = "当日实时盘口缺失，未模拟成交",
+) -> RebalancePlan:
+    """Re-size a close-generated plan using executable prices.
+
+    The original signal direction is preserved: a buy is never converted to a
+    sell (or vice versa) solely because the executable price changed.  Missing
+    prices freeze affected rows, and broad quote failure freezes the whole plan.
+    """
+
+    if not 0.0 <= minimum_coverage <= 1.0:
+        raise ValueError("minimum_coverage must be between 0 and 1")
+
+    orders = plan.orders.copy()
+    errors = dict(plan.errors)
+    if orders.empty:
+        return RebalancePlan(orders, errors, plan.as_of, portfolio.total_equity)
+
+    original_actionable = orders["action"].isin(["buy", "sell"])
+    actionable_count = int(original_actionable.sum())
+    valid_prices: dict[str, float] = {}
+    for code, value in prices.items():
+        price = pd.to_numeric(value, errors="coerce")
+        if pd.notna(price) and float(price) > 0:
+            valid_prices[str(code)] = float(price)
+
+    portfolio.update_prices(
+        {
+            code: price
+            for code, price in valid_prices.items()
+            if code in portfolio.holdings
+        }
+    )
+    equity_at_execution = portfolio.total_equity
+    priced_count = 0
+
+    for index, order in orders.loc[original_actionable].iterrows():
+        original_action = str(order["action"])
+        code = str(order["code"])
+        price = valid_prices.get(code, 0.0)
+        current_shares = (
+            portfolio.holdings[code].shares if code in portfolio.holdings else 0
+        )
+        if price <= 0:
+            orders.loc[index, ["action", "delta_shares", "estimated_amount"]] = [
+                "hold",
+                0,
+                0.0,
+            ]
+            orders.loc[index, "current_shares"] = current_shares
+            orders.loc[index, "target_shares"] = current_shares
+            orders.loc[index, "reason"] = missing_price_reason
+            errors[code] = missing_price_reason
+            continue
+
+        priced_count += 1
+        target_weight = max(0.0, float(order["target_weight"]))
+        target_shares = int(
+            np.floor(
+                equity_at_execution * target_weight / (price * LOT_SIZE)
+            ) * LOT_SIZE
+        )
+        if target_weight == 0:
+            target_shares = 0
+        delta = target_shares - current_shares
+        if original_action == "buy" and delta <= 0:
+            delta = 0
+            target_shares = current_shares
+        elif original_action == "sell" and delta >= 0:
+            delta = 0
+            target_shares = current_shares
+        elif delta < 0:
+            available = portfolio.available_shares(code, trade_date)
+            delta = -min(abs(delta), available)
+            target_shares = current_shares + delta
+
+        action = "buy" if delta > 0 else "sell" if delta < 0 else "hold"
+        orders.loc[index, "reference_price"] = price
+        orders.loc[index, "current_shares"] = current_shares
+        orders.loc[index, "target_shares"] = target_shares
+        orders.loc[index, "delta_shares"] = delta
+        orders.loc[index, "estimated_amount"] = abs(delta) * price
+        orders.loc[index, "action"] = action
+
+    quote_coverage = priced_count / actionable_count if actionable_count else 1.0
+    if actionable_count and quote_coverage < minimum_coverage:
+        errors["realtime_coverage"] = (
+            f"实时盘口覆盖率仅{quote_coverage:.0%}，低于{minimum_coverage:.0%}，"
+            "已冻结本次全部模拟交易"
+        )
+        orders.loc[original_actionable, "target_shares"] = orders.loc[
+            original_actionable, "current_shares"
+        ]
+        orders.loc[original_actionable, "delta_shares"] = 0
+        orders.loc[original_actionable, "estimated_amount"] = 0.0
+        orders.loc[original_actionable, "action"] = "hold"
+        orders.loc[original_actionable, "reason"] = "实时盘口质量门禁未通过，禁止模拟交易"
+
+    order_priority = {"sell": 0, "buy": 1, "hold": 2}
+    orders["_priority"] = orders["action"].map(order_priority)
+    orders = orders.sort_values(
+        ["_priority", "estimated_amount"], ascending=[True, False]
+    ).drop(columns="_priority").reset_index(drop=True)
+    return RebalancePlan(orders, errors, plan.as_of, equity_at_execution)
 
 
 def execute_rebalance_plan(

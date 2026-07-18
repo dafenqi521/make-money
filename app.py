@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src.data.fetcher import fetch_multi_etf_info
 from src.data.portfolio_db import PortfolioDB
 from src.engine.backtest import (
     BacktestSettings,
@@ -24,9 +25,15 @@ from src.engine.paper_trading import (
     RebalancePlan,
     build_rebalance_plan,
     execute_rebalance_plan,
+    reprice_rebalance_plan,
 )
 from src.engine.portfolio import PortfolioManager
 from src.engine.rotation_scanner import DEFAULT_ETF_POOL, scan_etf_pool
+from src.engine.trading_schedule import (
+    confirmation_window,
+    realtime_price_for_action,
+    shanghai_now,
+)
 from src.strategy.etf_rotation import RotationConfig
 from src.ui.backtest_dashboard import render_backtest_result, render_parameter_sweep
 from src.ui.terminal_theme import PRIMARY, apply_chart_theme, inject_css
@@ -341,7 +348,8 @@ with st.sidebar:
         correlation_threshold=correlation_threshold,
     )
 
-    run_scan = st.button("扫描并生成调仓清单", type="primary", width="stretch")
+    run_scan = st.button("立即重新扫描（可选）", width="stretch")
+    st.caption("页面打开、参数变化，或缓存超过15分钟后的下一次交互会自动扫描。")
 
     with st.expander("账户备份与重置"):
         if db.is_cloud_persistent:
@@ -382,6 +390,8 @@ with st.sidebar:
             if db.reset():
                 st.session_state["paper_portfolio"] = None
                 st.session_state.pop("rotation_scan_result", None)
+                st.session_state.pop("rotation_auto_scan_key", None)
+                st.session_state.pop("rotation_scan_checked_at", None)
                 _set_flash("success", "模拟账户已清空")
                 st.rerun()
             st.error("模拟账户重置失败")
@@ -396,22 +406,49 @@ st.caption(
 _show_flash()
 
 
-if run_scan:
+scan_key = (
+    pool_key,
+    max_positions,
+    cash_reserve,
+    max_position_weight,
+    min_avg_amount_wan * 10_000.0,
+    min_daily_amount_wan * 10_000.0,
+    correlation_threshold,
+)
+scan_now = shanghai_now()
+last_checked_raw = st.session_state.get("rotation_scan_checked_at")
+try:
+    last_checked = datetime.fromisoformat(last_checked_raw) if last_checked_raw else None
+except (TypeError, ValueError):
+    last_checked = None
+if last_checked is not None:
+    last_checked = shanghai_now(last_checked)
+scan_cache_expired = (
+    last_checked is None
+    or (scan_now - last_checked).total_seconds() >= 900
+)
+auto_scan_due = (
+    st.session_state.get("rotation_scan_result") is None
+    or st.session_state.get("rotation_auto_scan_key") != scan_key
+    or scan_cache_expired
+)
+
+if run_scan or auto_scan_due:
     if not pool_key:
         st.error("候选池为空，请输入至少一个6位ETF代码。")
     else:
-        with st.spinner("正在读取历史行情、计算目标组合和调仓差额……"):
-            result = _cached_scan(
-                pool_key,
-                max_positions,
-                cash_reserve,
-                max_position_weight,
-                min_avg_amount_wan * 10_000.0,
-                min_daily_amount_wan * 10_000.0,
-                correlation_threshold,
-            )
-            st.session_state["rotation_scan_result"] = result
-            st.session_state["rotation_scan_config"] = current_config
+        if run_scan:
+            _cached_scan.clear()
+        with st.spinner("正在自动读取完整日线、计算目标组合和调仓差额……"):
+            try:
+                result = _cached_scan(*scan_key)
+                st.session_state["rotation_scan_result"] = result
+                st.session_state["rotation_scan_config"] = current_config
+                st.session_state["rotation_auto_scan_key"] = scan_key
+            except Exception as error:
+                st.error(f"自动扫描失败：{error}")
+            finally:
+                st.session_state["rotation_scan_checked_at"] = scan_now.isoformat()
 
 
 result = st.session_state.get("rotation_scan_result")
@@ -421,7 +458,12 @@ scan_config: RotationConfig = st.session_state.get(
 
 plan: RebalancePlan | None = None
 if result is not None and portfolio is not None:
-    plan = build_rebalance_plan(portfolio, result, scan_config)
+    plan = build_rebalance_plan(
+        portfolio,
+        result,
+        scan_config,
+        trade_date=shanghai_now().date().isoformat(),
+    )
     try:
         _save_account(db, portfolio, result.as_of)
     except RuntimeError as error:
@@ -479,8 +521,9 @@ tab_rebalance, tab_account, tab_trades, tab_universe, tab_backtest = st.tabs(
 
 with tab_rebalance:
     if result is None:
-        st.info("请在左侧点击“扫描并生成调仓清单”。")
+        st.info("页面已尝试自动扫描；若行情源暂时不可用，可在左侧点击“立即重新扫描”。")
     else:
+        current_window = confirmation_window(result.as_of, shanghai_now())
         successful_total = result.scanned_count + len(result.errors)
         coverage = result.scanned_count / successful_total if successful_total else 0.0
         cols = st.columns(5)
@@ -489,6 +532,17 @@ with tab_rebalance:
         cols[2].metric("扫描覆盖率", f"{coverage:.0%}")
         cols[3].metric("趋势合格", f"{result.eligible_count} 只")
         cols[4].metric("目标持仓", f"{len(result.targets)} 只")
+
+        if current_window.recommended:
+            st.success(current_window.message)
+        elif current_window.can_confirm:
+            st.warning(current_window.message)
+        else:
+            st.info(current_window.message)
+        st.caption(
+            "执行节奏：收盘后形成完整日线信号 → 下一开市日09:35–10:00确认；"
+            "系统确认时再读取当日买一/卖一价。"
+        )
 
         if portfolio is None:
             st.warning("当前尚未创建模拟账户，只展示目标组合，不生成持仓差额。")
@@ -510,25 +564,54 @@ with tab_rebalance:
                 },
             )
             st.caption(
-                "正数为买入、负数为卖出。参考价格是最新完整日线收盘价，实际模拟成交会加入滑点。"
+                "正数为买入、负数为卖出。表内先展示完整日线收盘价；确认时会按当日实时盘口重新计算份额。"
             )
 
             with st.expander("执行全部模拟调仓", expanded=plan.actionable_count > 0):
-                execution_date = st.date_input("模拟成交日期", value=date.today())
+                execution_date = shanghai_now().date()
+                st.write(f"模拟成交日期：{execution_date.isoformat()}")
                 slippage_bps = st.number_input(
                     "单边滑点（基点）", min_value=0, max_value=100, value=10, step=5
                 )
-                st.caption("10个基点 = 0.1%；系统始终先卖后买。")
+                st.caption(
+                    "10个基点 = 0.1%；买入优先取卖一价、卖出优先取买一价，"
+                    "再计入滑点，系统始终先卖后买。"
+                )
                 if st.button(
                     f"确认模拟执行（{plan.actionable_count} 笔）",
                     type="primary",
-                    disabled=plan.actionable_count == 0,
+                    disabled=(
+                        plan.actionable_count == 0
+                        or not current_window.can_confirm
+                    ),
                 ):
                     execution_plan = build_rebalance_plan(
                         portfolio,
                         result,
                         scan_config,
                         trade_date=execution_date.isoformat(),
+                    )
+                    actionable = execution_plan.orders[
+                        execution_plan.orders["action"].isin(["buy", "sell"])
+                    ]
+                    codes = actionable["code"].astype(str).tolist()
+                    quotes = fetch_multi_etf_info(codes) if codes else {}
+                    live_prices = {}
+                    for _, order in actionable.iterrows():
+                        code = str(order["code"])
+                        price = realtime_price_for_action(
+                            quotes.get(code),
+                            str(order["action"]),
+                            execution_date,
+                        )
+                        if price is not None:
+                            live_prices[code] = price
+                    execution_plan = reprice_rebalance_plan(
+                        execution_plan,
+                        portfolio,
+                        live_prices,
+                        trade_date=execution_date.isoformat(),
+                        minimum_coverage=0.80,
                     )
                     execution = execute_rebalance_plan(
                         portfolio,
@@ -542,10 +625,15 @@ with tab_rebalance:
                         message = f"已完成 {len(execution.trades)} 笔模拟成交"
                         if execution.errors:
                             message += f"，{len(execution.errors)} 笔未成交"
+                        if execution_plan.errors:
+                            message += f"，{len(execution_plan.errors)} 项被风控跳过"
                         _set_flash("success", message)
                         st.rerun()
                     if execution.errors:
                         for error in execution.errors.values():
+                            st.error(error)
+                    if execution_plan.errors:
+                        for error in execution_plan.errors.values():
                             st.error(error)
                     else:
                         st.info("当前没有需要执行的模拟订单")

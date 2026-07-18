@@ -47,6 +47,7 @@ _SINA_URL = "https://hq.sinajs.cn/list="
 # fmt: off
 _T_IDX = {
     "name": 1,          "price": 3,        "last_close": 4,    "open": 5,
+    "timestamp": 30,
     "high": 33,         "low": 34,         "change_amt": 31,   "change_pct": 32,
     "amount_wan": 37,   "turnover_pct": 38,"pe_ttm": 39,       "amplitude_pct": 43,
     "mcap_yi": 44,      "float_mcap_yi": 45, "pb": 46,         "limit_up": 47,
@@ -173,9 +174,24 @@ def _tencent_realtime(codes: list[str]) -> dict[str, dict]:
             except (ValueError, IndexError):
                 return None
 
+        raw_timestamp = vals[_T_IDX["timestamp"]].strip()
+        quote_timestamp = pd.to_datetime(raw_timestamp, errors="coerce")
+        quote_date = (
+            quote_timestamp.date().isoformat()
+            if pd.notna(quote_timestamp)
+            else None
+        )
+        quote_time = (
+            quote_timestamp.time().isoformat(timespec="seconds")
+            if pd.notna(quote_timestamp)
+            else None
+        )
+
         result[code] = {
             # Basic
             "name": vals[_T_IDX["name"]],
+            "date": quote_date,
+            "time": quote_time,
             "current_price": _f(_T_IDX["price"]),
             "prev_close": _f(_T_IDX["last_close"]),
             "open": _f(_T_IDX["open"]),
