@@ -4,12 +4,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-# 尝试导入 DailySignal 类型（用于类型标注，CLI 中也能工作）
-try:
-    from src.ui.signal_panel import DailySignal
-except ImportError:
-    DailySignal = None  # type: ignore
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -49,7 +43,7 @@ def build_signal_message(
     Args:
         code: ETF 代码，如 "510300"
         name: ETF 名称，如 "沪深300ETF"
-        signal: DailySignal 对象（来自 signal_panel.compute_daily_signal）
+        signal: 提供操作、评分、因子和步骤字段的信号对象
         info: fetch_etf_info() 返回的实时行情 dict
         pe_percentile: 可选 PEPercentile 对象
 

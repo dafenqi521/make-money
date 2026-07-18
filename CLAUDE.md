@@ -1,107 +1,37 @@
-# make-money — ETF 投资决策系统
+# make-money — 场内ETF趋势轮动
 
-## 这是什么
+## 项目边界
 
-基于 Streamlit 的 ETF 场内基金数据展示 + 策略回测系统。输入 ETF 代码即可看到实时行情（五档盘口、PE/PB/市值/换手率）、K线图（含MA5/10/20）、历史数据表，以及四大策略回测对比。
+本项目只保留一个策略：场内ETF多资产趋势轮动。
 
-## 跑起来
+- 二级市场买卖沪深ETF；
+- 不做一级申赎、LOF套利、杠杆或反向产品；
+- 日线信号只使用已完成交易日数据；
+- 本地 Streamlit 生成排名和目标组合；
+- 聚宽脚本负责回测和模拟交易。
+
+## 运行
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -v     # 98个测试，确认全过
-streamlit run app.py            # 打开 http://localhost:8501
+python -m pytest tests -q
+streamlit run app.py
 ```
 
-## 架构
+## 核心文件
 
-```
-用户输入ETF代码 → app.py
-  ├─ 行情数据 Tab → src/ui/dashboard.py
-  │   ├─ src/data/fetcher.py (腾讯/Baidu/Sina/AKShare 4源)
-  │   └─ src/ui/terminal_theme.py (主题/CSS/Plotly)
-  └─ 策略回测 Tab → src/ui/strategy_ui.py
-      ├─ src/strategy/ (4个策略实现)
-      └─ src/engine/ (回测引擎: broker/risk/metrics/backtest)
-```
+- `src/strategy/etf_rotation.py`：纯选基、配置、仓位和退出逻辑；
+- `src/engine/rotation_scanner.py`：本地候选池数据扫描服务；
+- `joinquant/etf_rotation_strategy.py`：聚宽执行适配器；
+- `app.py`：唯一 Streamlit 入口；
+- `docs/strategy/exchange_traded_etf_rotation_v1.md`：策略规格；
+- `docs/development/etf_rotation_roadmap.md`：开发路线。
 
-## 数据源优先级
+## 开发约束
 
-1. **腾讯财经** `qt.gtimg.cn` — 实时价+PE/PB/市值，不封IP
-2. **百度股市通** — 日K线自带MA5/10/20
-3. **新浪** — 兜底
-4. **AKShare** — ETF列表
-
-关键函数：
-- `fetch_etf_info("510300")` → dict (35字段)
-- `fetch_etf_hist("510300")` → DataFrame (11列: OHLCV + MA + 涨跌幅 + 振幅)
-- `fetch_multi_etf_info(["510300","510050"])` → 批量查询
-
-## 策略引擎
-
-自定义轻量引擎，零外部依赖。四种策略：
-
-| 策略 | 逻辑 | 类 |
-|------|------|-----|
-| 趋势跟随 | MA金叉买/死叉卖 | `TrendFollowingStrategy` |
-| 网格交易 | 价格带N档低买高卖 | `GridTradingStrategy` |
-| 估值定投 | PE阈值每月定投 | `ValueAveragingStrategy` |
-| 混合策略 | 60%定投+40%网格 | `HybridStrategy` |
-
-用法：
-```python
-from src.engine.backtest import BacktestEngine
-from src.strategy.trend_following import TrendFollowingStrategy
-
-engine = BacktestEngine(initial_capital=100_000)
-result = engine.run(df, TrendFollowingStrategy(), pe_value=15.0)
-print(result.summary())  # 年化/Sharpe/MaxDD/胜率
-```
-
-## UI 设计约束
-
-- 当前主题：浅色卡片式 (`src/ui/terminal_theme.py`)
-- 页面切换用 `st.tabs`（客户端无刷新切换）
-- 所有标签用中文
-- 盘口用横向深度条代替表格
-- 数据表视觉层次：收盘+涨跌幅(T1) > OHLC(T2) > MA/振幅(T3)
-- 用 `st.container(border=True)` 包裹相关内容形成卡片
-
-## v0.3 已完成的里程碑
-
-1. ✅ **买入/卖出信号面板** — 多因子综合评估（PE估值 + 均线趋势 + 网格位置），加权打分生成每日操作建议
-2. ✅ **PE历史数据接入** — 通过 legulegu 指数PE计算ETF估值分位，支持PE Band图表
-3. ✅ **globalpercent宏观温度计** — Polymarket预测市场概率面板，5模块情绪分类，4级风险提示
-4. ✅ **交易记录持久化** — SQLite存储交易记录+持仓跟踪，Streamlit重启不丢失
-
-## 下一步（v0.4 规划中）
-
-- **多ETF组合管理** — 同时监控多个ETF，组合层面仓位配置建议
-- **回测对比面板** — 多策略同屏回测对比，参数优化建议
-- **微信/钉钉通知** — 触发信号时推送通知
-
-## 注意事项
-
-- Python 3.8（建议升3.9+但当前可用）
-- ETF的PE/TTM腾讯经常不返回（数据源特性，非Bug）
-- `Styler.applymap()` 不是 `.map()`（pandas 2.0兼容）
-## 可用的 Skills
-
-项目中有 3 个 Skill 文件，Codex/Claude Code 会自动识别：
-
-### 1. a-stock-data — A股全栈数据工具包
-- 文件：`.claude/skills/a-stock-data/SKILL.md`
-- 作者：simonlin1212，v3.2.4
-- 功能：7层数据架构（行情/研报/信号/资金面/新闻/基础数据/公告）
-- **本项目关联**：腾讯财经 API `qt.gtimg.cn`、百度K线、mootdx、东财研报
-- 优先用通达信(mootdx)/腾讯(不封IP)，东财接口已内置限流防封
-
-### 2. globalpercent — 全球宏观概率面板
-- 文件：`.claude/skills/globalpercent/SKILL.md`
-- 作者：simonlin1212
-- 功能：Polymarket + Kalshi 预测市场概率数据，零鉴权
-- **本项目关联**：v0.3 风控叠加层——宏观情绪温度计，极端市场抑制买入信号
-
-### 3. frontend-design — 前端设计 Skill
-- 文件：`.claude/skills/frontend-design/SKILL.md`
-- 功能：8种设计锚点（Swiss/Industrial/Brutalist/Aurora/Chaotic/Retro-Futuristic/Organic/Lo-Fi）
-- **本项目关联**：UI 美化时使用，当前选用浅色卡片式设计
+1. 不重新引入第二套交易策略或策略注册器；
+2. 横截面组合逻辑不得塞进旧的单标的回测模型；
+3. 数据失败必须显式展示，禁止把缺失数据当作买入依据；
+4. 买入数量按100份取整，卖出检查可卖数量；
+5. 默认不连接真实券商，不承诺收益；
+6. 修改后运行完整测试和 Streamlit 页面冒烟测试。
