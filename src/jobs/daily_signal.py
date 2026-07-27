@@ -83,22 +83,30 @@ def _write_summary_json(
     from pathlib import Path
 
     targets = []
-    for t in scan.targets:
+    for _, t in scan.targets.iterrows():
+        code = str(t.get("code", ""))
+        name = str(t.get("name", ""))
+        weight = float(t.get("target_weight", 0))
+        price = float(t.get("close", 0))
+        score = float(t.get("score", 0))
+        # 按10万本金算建议金额和股数
+        suggested_amount = 100_000 * weight
+        suggested_shares = int(suggested_amount / price / 100) * 100 if price > 0 else 0
+
         targets.append({
-            "code": getattr(t, "code", ""),
-            "name": getattr(t, "name", ""),
-            "category": getattr(t, "category", ""),
-            "weight": round(getattr(t, "weight", 0.0), 4),
-            "momentum_score": round(getattr(t, "momentum_score", 0.0), 4),
+            "code": code,
+            "name": name,
+            "category": str(t.get("category", "")),
+            "weight": round(weight, 4),
+            "price": round(price, 3),
+            "momentum_score": round(score, 1),
+            "suggested_shares": suggested_shares,
+            "suggested_amount": round(suggested_amount, 0),
         })
 
     summary = {
         "updated": scan.as_of.isoformat() if scan.as_of else "",
-        "batch_id": result.get("batch_id", ""),
-        "universe_count": result.get("universe_count", 0),
-        "pool_count": result.get("pool_count", 0),
         "scanned": result.get("scan_count", 0),
-        "coverage": round(result.get("coverage", 0.0), 2),
         "targets": targets,
     }
     path = Path(__file__).resolve().parent.parent.parent / "latest_signal.json"
@@ -231,19 +239,26 @@ def run_scan_job(
         "coverage": coverage,
         "used_backup_pool": used_backup_pool,
     }
-    # 构建微信推送：列出目标ETF
+    # 构建微信推送：列出目标ETF + 价格 + 建议
     target_lines = []
-    for t in scan.targets[:8]:
-        code = getattr(t, "code", "")
-        name = getattr(t, "name", "")
-        weight = getattr(t, "weight", 0.0)
-        target_lines.append(f"{code} {name}  {weight:.0%}")
+    for _, t in scan.targets.iterrows():
+        code = str(t.get("code", ""))
+        name = str(t.get("name", ""))
+        weight = float(t.get("target_weight", 0))
+        price = float(t.get("close", 0))
+        amt = 100_000 * weight
+        shares = int(amt / price / 100) * 100 if price > 0 else 0
+        target_lines.append(
+            f"{code} {name}\n"
+            f"  价格 ￥{price:.3f}  |  仓位 {weight:.0%}  |  建议 {shares}股(约￥{amt:.0f})"
+        )
+
     target_text = "\n".join(target_lines) if target_lines else "空仓"
 
     notify_text = (
-        f"收盘扫描完成\n"
         f"扫描 {scan.scanned_count} 只 ETF\n"
-        f"明日目标:\n{target_text}"
+        f"---\n"
+        f"{target_text}"
     )
     _notify("signal_ready", notify_text, **result)
 
@@ -276,14 +291,22 @@ def run_reminder_job(db: PortfolioDB, now: datetime | None = None) -> dict:
     current_time = current.time().replace(tzinfo=None)
     if current_time < time(12, 0):
         event_type = "morning_plan"
-        header = "今日买卖计划"
+        header = "今日买卖计划 (10:00)"
         footer = "尾盘14:30再次提醒"
     else:
         event_type = "preclose_remind"
-        header = "尾盘提醒 - 距收盘30分钟"
-        footer = "请立即执行！"
+        header = "尾盘确认 (14:30)"
+        footer = "距收盘30分钟，请执行！"
 
-    lines = [f"{t['code']} {t['name']}  目标权重 {t['weight']:.0%}" for t in targets[:8]]
+    lines = []
+    for t in targets[:8]:
+        price = t.get("price", 0)
+        weight = t.get("weight", 0)
+        shares = t.get("suggested_shares", 0)
+        lines.append(
+            f"{t['code']} {t['name']}\n"
+            f"  价格 ￥{price:.3f}  |  仓位 {weight:.0%}  |  {shares}股"
+        )
     message = (
         f"{header}\n"
         f"信号日期: {signal_date}\n"
