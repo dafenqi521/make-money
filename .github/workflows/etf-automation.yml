@@ -16,7 +16,7 @@ on:
           - remind
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: etf-signal-automation
@@ -27,17 +27,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+      PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
       SCAN_MAX_WORKERS: "12"
       MAX_SCAN_ETFS: "0"
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+
       - run: pip install -r requirements.txt
+
       - name: Choose task
         id: task
         shell: bash
@@ -49,4 +51,17 @@ jobs:
           else
             echo "value=scan" >> "$GITHUB_OUTPUT"
           fi
+
       - run: python -m src.jobs.daily_signal "${{ steps.task.outputs.value }}"
+
+      - name: Commit & push DB + signal snapshot
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add src/data/portfolio_db/ || true
+          git add src/data/etf_universe.json || true
+          git add latest_signal.json || true
+          git diff --cached --quiet || git commit -m "auto: update portfolio DB & signals [skip ci]"
+          git push

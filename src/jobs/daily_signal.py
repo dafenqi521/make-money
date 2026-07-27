@@ -39,16 +39,67 @@ from src.strategy.etf_rotation import RotationConfig
 
 
 def _notify(event: str, text: str, **details: object) -> bool:
-    """Send a provider-neutral webhook when configured, otherwise log JSON."""
+    """Send via PushPlus (WeChat) when configured, otherwise log JSON."""
 
     payload = {"event": event, "text": text, **details}
     print(json.dumps(payload, ensure_ascii=False))
+
+    # PushPlus 微信推送 (优先)
+    pushplus_token = str(os.getenv("PUSHPLUS_TOKEN") or "").strip()
+    if pushplus_token:
+        title = {"signal_ready": "ETF轮动信号已生成", "confirmation_due": "ETF调仓待确认"}.get(event, event)
+        content_lines = [text, ""]
+        for key, val in details.items():
+            content_lines.append(f"{key}: {val}")
+        content = "\n".join(content_lines)
+        resp = requests.post(
+            "http://www.pushplus.plus/send",
+            json={"token": pushplus_token, "title": title, "content": content},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        print(f"PushPlus sent: {resp.json()}")
+        return True
+
+    # 兼容旧 webhook
     webhook = str(os.getenv("NOTIFY_WEBHOOK_URL") or "").strip()
     if not webhook:
         return False
     response = requests.post(webhook, json=payload, timeout=15)
     response.raise_for_status()
     return True
+
+
+def _write_summary_json(
+    scan: RotationScanResult,
+    config: RotationConfig,
+    pool: list[dict],
+    result: dict,
+) -> None:
+    """Write a human-readable signal summary to the repo root."""
+    from pathlib import Path
+
+    targets = []
+    for t in scan.targets:
+        targets.append({
+            "code": getattr(t, "code", ""),
+            "name": getattr(t, "name", ""),
+            "category": getattr(t, "category", ""),
+            "weight": round(getattr(t, "weight", 0.0), 4),
+            "momentum_score": round(getattr(t, "momentum_score", 0.0), 4),
+        })
+
+    summary = {
+        "updated": scan.as_of.isoformat() if scan.as_of else "",
+        "batch_id": result.get("batch_id", ""),
+        "universe_count": result.get("universe_count", 0),
+        "pool_count": result.get("pool_count", 0),
+        "scanned": result.get("scan_count", 0),
+        "coverage": round(result.get("coverage", 0.0), 2),
+        "targets": targets,
+    }
+    path = Path(__file__).resolve().parent.parent.parent / "latest_signal.json"
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def refresh_universe(
@@ -182,6 +233,10 @@ def run_scan_job(
         f"ETF轮动信号已生成：扫描{scan.scanned_count}只，目标{len(scan.targets)}只",
         **result,
     )
+
+    # 写一份人类可读的 JSON 摘要到仓库根目录
+    _write_summary_json(scan, config, pool, result)
+
     return result
 
 
@@ -212,8 +267,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("task", choices=("scan", "remind"))
     args = parser.parse_args()
-    if os.getenv("GITHUB_ACTIONS") == "true" and not os.getenv("DATABASE_URL"):
-        raise RuntimeError("GitHub Actions需要配置DATABASE_URL仓库Secret")
     db = PortfolioDB(database_url=os.getenv("DATABASE_URL"))
     result = run_scan_job(db) if args.task == "scan" else run_reminder_job(db)
     print(json.dumps(result, ensure_ascii=False))
