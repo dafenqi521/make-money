@@ -17,12 +17,16 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 import warnings
 from typing import Optional
 
 import pandas as pd
 import requests
+
+# AKShare's Sina parser may initialise a JS runtime; concurrent calls are unsafe.
+_AKSHARE_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Environment & compat
@@ -463,10 +467,11 @@ def _akshare_hist(symbol: str, start_date: str = None,
 
     prefixed = _detect_prefix(symbol)
 
-    try:
-        df = ak.fund_etf_hist_sina(symbol=prefixed)
-    except Exception:
-        return pd.DataFrame()
+    with _AKSHARE_LOCK:
+        try:
+            df = ak.fund_etf_hist_sina(symbol=prefixed)
+        except Exception:
+            return pd.DataFrame()
 
     if df is None or df.empty:
         return pd.DataFrame()
@@ -704,3 +709,82 @@ def get_available_etfs() -> pd.DataFrame:
             return df
         except Exception:
             return pd.DataFrame(columns=["代码", "名称"])
+
+
+# ---------------------------------------------------------------------------
+# ETF universe builder — dynamic pool for full-market scanning
+# ---------------------------------------------------------------------------
+
+# Codes starting with these prefixes are exchange-traded products.
+# 51 = Shanghai ETF, 56 = Shanghai, 58 = Shanghai STAR/科创,
+# 159 = Shenzhen ETF, 50 = Shanghai mixed (ETFs + LOFs),
+# 16 = Shenzhen mixed (most are LOFs but some are real ETFs).
+_ETF_CODE_PREFIXES = ("51", "56", "58", "159", "50")
+
+# Name keywords to exclude from the universe.
+_EXCLUDED_NAME_KEYWORDS = (
+    "货币", "现金", "理财", "分级", "杠杆", "反向", "REIT", "LOF",
+    "定开", "定期开放", "封闭", "转债", "FOF",
+)
+
+
+def fetch_etf_universe(exclude_bond: bool = False) -> list[dict]:
+    """Fetch all 场内ETF from the market as a scanner-compatible pool.
+
+    Merges the curated ``DEFAULT_ETF_POOL`` with additional ETFs discovered
+    via AKShare so that mainstream ETFs are always covered even when the
+    dynamic source is incomplete.
+
+    Automatically classifies each ETF via :func:`classify_etf`.
+
+    Args:
+        exclude_bond: If True, exclude bond/convertible-bond ETFs.
+
+    Returns:
+        List of dicts with ``code``, ``name``, ``category`` keys.
+    """
+    from src.engine.rotation_scanner import DEFAULT_ETF_POOL
+    from src.strategy.etf_rotation import classify_etf
+
+    seen: set[str] = set()
+    result: list[dict] = []
+
+    def _add(code: str, name: str, category: str = "") -> None:
+        code = code.strip()
+        if len(code) != 6 or not code.isdigit() or code in seen:
+            return
+        if any(kw.upper() in str(name).upper() for kw in _EXCLUDED_NAME_KEYWORDS):
+            return
+        if exclude_bond and (category or classify_etf(name)) == "bond":
+            return
+        seen.add(code)
+        result.append({
+            "code": code,
+            "name": str(name).strip(),
+            "category": category or classify_etf(str(name)),
+        })
+
+    # 1. Always include the curated pool first.
+    for entry in DEFAULT_ETF_POOL:
+        _add(str(entry["code"]), str(entry["name"]), str(entry.get("category", "")))
+
+    # 2. Append additional ETFs from the market data feed.
+    raw = get_available_etfs()
+    if raw.empty:
+        return result
+
+    code_col = next((c for c in raw.columns if c in ("代码", "code", "fund_code")), None)
+    name_col = next((c for c in raw.columns if c in ("名称", "name", "fund_name")), None)
+    if code_col is None or name_col is None:
+        return result
+
+    for _, row in raw.iterrows():
+        raw_code = str(row[code_col]).strip()
+        code = raw_code
+        if raw_code.lower().startswith(("sh", "sz", "bj")):
+            code = raw_code[2:]
+        if not any(code.startswith(p) for p in _ETF_CODE_PREFIXES):
+            continue
+        _add(code, str(row[name_col]).strip())
+
+    return result

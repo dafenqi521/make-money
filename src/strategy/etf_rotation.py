@@ -136,6 +136,7 @@ def classify_etf(name: str) -> str:
     if any(
         k in name
         for k in (
+            # Broad-based / benchmark indices
             "沪深300",
             "上证50",
             "上证180",
@@ -149,10 +150,39 @@ def classify_etf(name: str) -> str:
             "创业板",
             "科创50",
             "科创100",
+            "科创",
             "红利",
+            "低波",
+            "基本面",
+            "央企",
+            "国企",
+            "一带一路",
+            "MSCIA",
         )
     ):
         return "domestic_broad"
+    if any(
+        k in name
+        for k in (
+            # Sector / industry keywords (ordered by specificity)
+            "半导体", "芯片",
+            "证券", "券商",
+            "银行",
+            "军工", "国防",
+            "新能源", "光伏", "电池", "风电",
+            "医药", "医疗", "生物医药", "创新药", "中药",
+            "消费", "食品饮料", "酒",
+            "科技", "计算机", "软件", "通信", "互联网",
+            "传媒", "游戏",
+            "汽车", "家电",
+            "地产", "金融",
+            "基建", "建材", "钢铁", "煤炭", "化工",
+            "农业", "养殖", "畜牧",
+            "云计算", "大数据", "人工智能", "机器人",
+            "电力",
+        )
+    ):
+        return "domestic_sector"
     if "ETF" in name:
         return "domestic_sector"
     return "other"

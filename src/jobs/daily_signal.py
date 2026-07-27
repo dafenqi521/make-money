@@ -13,8 +13,8 @@ from pathlib import Path
 
 import requests
 
-from src.data.fetcher import fetch_etf_hist_primary
-from src.engine.rotation_scanner import DEFAULT_ETF_POOL, RotationScanResult, scan_etf_pool
+from src.data.fetcher import fetch_etf_hist, fetch_etf_universe
+from src.engine.rotation_scanner import RotationScanResult, scan_etf_pool
 from src.engine.trading_schedule import is_trading_day, shanghai_now
 from src.strategy.etf_rotation import RotationConfig
 
@@ -54,13 +54,15 @@ def run_scan_job() -> dict:
         return {"status": "skipped", "reason": "休市日"}
 
     config = RotationConfig()
-    pool = [dict(row) for row in DEFAULT_ETF_POOL]
+    pool = fetch_etf_universe()
+    if not pool:
+        return {"status": "error", "reason": "无法获取ETF列表"}
 
     print(f"[scan] 扫描 {len(pool)} 只 ETF ...")
     scan = scan_etf_pool(
         pool=pool,
         config=config,
-        history_fetcher=fetch_etf_hist_primary,
+        history_fetcher=fetch_etf_hist,
         max_workers=int(os.getenv("SCAN_MAX_WORKERS", "12") or 12),
         now=now,
     )
