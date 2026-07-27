@@ -231,22 +231,19 @@ def run_scan_job(
         "coverage": coverage,
         "used_backup_pool": used_backup_pool,
     }
-    # 构建微信推送内容：列出目标ETF
+    # 构建微信推送：列出目标ETF
     target_lines = []
-    for t in scan.targets[:8]:  # 最多8只
+    for t in scan.targets[:8]:
         code = getattr(t, "code", "")
         name = getattr(t, "name", "")
         weight = getattr(t, "weight", 0.0)
-        target_lines.append(f"{code} {name}  权重{weight:.0%}")
-    target_text = "\n".join(target_lines) if target_lines else "无目标（空仓）"
+        target_lines.append(f"{code} {name}  {weight:.0%}")
+    target_text = "\n".join(target_lines) if target_lines else "空仓"
 
     notify_text = (
-        f"扫描{scan.scanned_count}只 | 覆盖率{coverage:.0%}\n"
-        f"信号日期: {scan.as_of}\n"
-        f"---\n"
-        f"{target_text}\n"
-        f"---\n"
-        f"明日早盘/尾盘将再次提醒确认执行"
+        f"收盘扫描完成\n"
+        f"扫描 {scan.scanned_count} 只 ETF\n"
+        f"明日目标:\n{target_text}"
     )
     _notify("signal_ready", notify_text, **result)
 
@@ -257,59 +254,46 @@ def run_scan_job(
 
 
 def run_reminder_job(db: PortfolioDB, now: datetime | None = None) -> dict:
+    """推送当日买卖计划（10:00早盘 / 14:30尾盘）。"""
     current = shanghai_now(now)
     if not is_trading_day(current.date()):
         return {"status": "skipped", "reason": "休市日"}
-    stored = db.get_latest_signal_batch()
-    if not stored:
-        return {"status": "skipped", "reason": "没有已保存信号"}
-    signal_date = pd.to_datetime(stored["signal_date"], errors="coerce")
-    if pd.isna(signal_date) or next_trading_day(signal_date.date()) != current.date():
-        return {"status": "skipped", "reason": "今天不是该信号的确认日"}
-    execution = db.get_execution_batch(stored["batch_id"])
-    if execution and execution.get("status") == "completed":
-        return {"status": "skipped", "reason": "该信号已确认执行"}
 
-    # 根据时间判断是早盘还是尾盘提醒
+    # 直接读 latest_signal.json，不依赖数据库锁
+    from pathlib import Path
+    sig_path = Path(__file__).resolve().parent.parent.parent / "latest_signal.json"
+    if not sig_path.exists():
+        return {"status": "skipped", "reason": "暂无信号文件"}
+
+    sig = json.loads(sig_path.read_text(encoding="utf-8"))
+    targets = sig.get("targets", [])
+    if not targets:
+        return {"status": "skipped", "reason": "无目标标的"}
+
+    signal_date = sig.get("updated", "")
+
+    # 早盘 / 尾盘
     current_time = current.time().replace(tzinfo=None)
     if current_time < time(12, 0):
         event_type = "morning_plan"
-        header = "今日调仓计划"
-        footer = "请在09:30-10:00确认执行\n尾盘14:45将再次提醒"
+        header = "今日买卖计划"
+        footer = "尾盘14:30再次提醒"
     else:
         event_type = "preclose_remind"
-        header = "尾盘最后提醒"
-        footer = "距收盘仅15分钟，请立即确认！"
+        header = "尾盘提醒 - 距收盘30分钟"
+        footer = "请立即执行！"
 
-    # 尝试从latest_signal.json读取目标ETF
-    target_text = ""
-    try:
-        from pathlib import Path
-        sig_path = Path(__file__).resolve().parent.parent.parent / "latest_signal.json"
-        if sig_path.exists():
-            sig = json.loads(sig_path.read_text(encoding="utf-8"))
-            targets = sig.get("targets", [])
-            if targets:
-                lines = [f"{t['code']} {t['name']}  权重{t['weight']:.0%}" for t in targets[:8]]
-                target_text = "\n".join(lines)
-    except Exception:
-        pass
-
+    lines = [f"{t['code']} {t['name']}  目标权重 {t['weight']:.0%}" for t in targets[:8]]
     message = (
         f"{header}\n"
-        f"信号日期: {stored['signal_date']}\n"
+        f"信号日期: {signal_date}\n"
         f"---\n"
-        f"{target_text or '请查看 latest_signal.json'}\n"
+        f"{chr(10).join(lines)}\n"
         f"---\n"
         f"{footer}"
     )
-    sent = _notify(
-        event_type,
-        message,
-        batch_id=stored["batch_id"],
-        signal_date=stored["signal_date"],
-    )
-    return {"status": "success", "notified": sent, "batch_id": stored["batch_id"]}
+    sent = _notify(event_type, message)
+    return {"status": "success", "notified": sent}
 
 
 def main() -> None:
