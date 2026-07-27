@@ -2,8 +2,9 @@ name: ETF signal automation
 
 on:
   schedule:
-    - cron: "20 7 * * 1-5"
-    - cron: "35 1 * * 1-5"
+    - cron: "20 7 * * 1-5"     # 15:20 北京时间 — 收盘后扫描，生成次日信号
+    - cron: "30 1 * * 1-5"     # 09:30 北京时间 — 早盘：今日调仓计划
+    - cron: "45 6 * * 1-5"     # 14:45 北京时间 — 尾盘：确认执行，别忘下单
   workflow_dispatch:
     inputs:
       task:
@@ -46,10 +47,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "value=${{ inputs.task }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "35 1 * * 1-5" ]; then
-            echo "value=remind" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "${{ github.event.schedule }}" = "20 7 * * 1-5" ]; then
             echo "value=scan" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=remind" >> "$GITHUB_OUTPUT"
           fi
 
       - run: python -m src.jobs.daily_signal "${{ steps.task.outputs.value }}"

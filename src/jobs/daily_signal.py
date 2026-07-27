@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime
+from datetime import datetime, time
 from typing import Callable, Mapping
 
 import pandas as pd
@@ -47,11 +47,14 @@ def _notify(event: str, text: str, **details: object) -> bool:
     # PushPlus 微信推送 (优先)
     pushplus_token = str(os.getenv("PUSHPLUS_TOKEN") or "").strip()
     if pushplus_token:
-        title = {"signal_ready": "ETF轮动信号已生成", "confirmation_due": "ETF调仓待确认"}.get(event, event)
-        content_lines = [text, ""]
-        for key, val in details.items():
-            content_lines.append(f"{key}: {val}")
-        content = "\n".join(content_lines)
+        title_map = {
+            "signal_ready": "ETF轮动信号已生成",
+            "morning_plan": "今日调仓计划",
+            "preclose_remind": "尾盘确认 - 别忘下单",
+            "confirmation_due": "ETF调仓待确认",
+        }
+        title = title_map.get(event, event)
+        content = text
         resp = requests.post(
             "http://www.pushplus.plus/send",
             json={"token": pushplus_token, "title": title, "content": content},
@@ -228,11 +231,24 @@ def run_scan_job(
         "coverage": coverage,
         "used_backup_pool": used_backup_pool,
     }
-    _notify(
-        "signal_ready",
-        f"ETF轮动信号已生成：扫描{scan.scanned_count}只，目标{len(scan.targets)}只",
-        **result,
+    # 构建微信推送内容：列出目标ETF
+    target_lines = []
+    for t in scan.targets[:8]:  # 最多8只
+        code = getattr(t, "code", "")
+        name = getattr(t, "name", "")
+        weight = getattr(t, "weight", 0.0)
+        target_lines.append(f"{code} {name}  权重{weight:.0%}")
+    target_text = "\n".join(target_lines) if target_lines else "无目标（空仓）"
+
+    notify_text = (
+        f"扫描{scan.scanned_count}只 | 覆盖率{coverage:.0%}\n"
+        f"信号日期: {scan.as_of}\n"
+        f"---\n"
+        f"{target_text}\n"
+        f"---\n"
+        f"明日早盘/尾盘将再次提醒确认执行"
     )
+    _notify("signal_ready", notify_text, **result)
 
     # 写一份人类可读的 JSON 摘要到仓库根目录
     _write_summary_json(scan, config, pool, result)
@@ -253,9 +269,42 @@ def run_reminder_job(db: PortfolioDB, now: datetime | None = None) -> dict:
     execution = db.get_execution_batch(stored["batch_id"])
     if execution and execution.get("status") == "completed":
         return {"status": "skipped", "reason": "该信号已确认执行"}
-    message = "ETF轮动调仓待确认：请在北京时间09:35–10:00打开Streamlit页面复核。"
+
+    # 根据时间判断是早盘还是尾盘提醒
+    current_time = current.time().replace(tzinfo=None)
+    if current_time < time(12, 0):
+        event_type = "morning_plan"
+        header = "今日调仓计划"
+        footer = "请在09:30-10:00确认执行\n尾盘14:45将再次提醒"
+    else:
+        event_type = "preclose_remind"
+        header = "尾盘最后提醒"
+        footer = "距收盘仅15分钟，请立即确认！"
+
+    # 尝试从latest_signal.json读取目标ETF
+    target_text = ""
+    try:
+        from pathlib import Path
+        sig_path = Path(__file__).resolve().parent.parent.parent / "latest_signal.json"
+        if sig_path.exists():
+            sig = json.loads(sig_path.read_text(encoding="utf-8"))
+            targets = sig.get("targets", [])
+            if targets:
+                lines = [f"{t['code']} {t['name']}  权重{t['weight']:.0%}" for t in targets[:8]]
+                target_text = "\n".join(lines)
+    except Exception:
+        pass
+
+    message = (
+        f"{header}\n"
+        f"信号日期: {stored['signal_date']}\n"
+        f"---\n"
+        f"{target_text or '请查看 latest_signal.json'}\n"
+        f"---\n"
+        f"{footer}"
+    )
     sent = _notify(
-        "confirmation_due",
+        event_type,
         message,
         batch_id=stored["batch_id"],
         signal_date=stored["signal_date"],
