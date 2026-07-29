@@ -1,7 +1,31 @@
 {
-  "updated": "2026-07-27",
+  "updated": "2026-07-28",
   "scanned": 31,
-  "targets": [],
-  "buy": [],
+  "targets": [
+    {
+      "code": "512800",
+      "name": "银行ETF华宝",
+      "category": "domestic_sector",
+      "weight": 0.25,
+      "price": 0.818,
+      "score": 100.0,
+      "shares": 30500,
+      "amount": 25000.0
+    }
+  ],
+  "buy": [
+    {
+      "code": "512800",
+      "name": "银行ETF华宝",
+      "category": "domestic_sector",
+      "weight": 0.25,
+      "price": 0.818,
+      "score": 100.0,
+      "shares": 30500,
+      "amount": 25000.0,
+      "action": "新买入",
+      "prev_weight": 0
+    }
+  ],
   "sell": []
 }
