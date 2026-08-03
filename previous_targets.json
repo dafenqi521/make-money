@@ -1,15 +1,25 @@
 {
-  "updated": "2026-07-30",
+  "updated": "2026-07-31",
   "targets": [
     {
       "code": "512800",
       "name": "银行ETF华宝",
       "category": "domestic_sector",
       "weight": 0.25,
-      "price": 0.84,
+      "price": 0.836,
       "score": 100.0,
-      "shares": 29700,
+      "shares": 29900,
       "amount": 25000.0
+    },
+    {
+      "code": "159920",
+      "name": "恒生ETF华夏",
+      "category": "overseas_equity",
+      "weight": 0.3,
+      "price": 1.522,
+      "score": 50.0,
+      "shares": 19700,
+      "amount": 30000.0
     }
   ]
 }
