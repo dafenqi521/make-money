@@ -1,5 +1,5 @@
 {
-  "updated": "2026-07-31",
+  "updated": "2026-08-03",
   "scanned": 31,
   "targets": [
     {
@@ -7,32 +7,42 @@
       "name": "银行ETF华宝",
       "category": "domestic_sector",
       "weight": 0.25,
-      "price": 0.836,
-      "score": 100.0,
-      "shares": 29900,
+      "price": 0.831,
+      "score": 91.2,
+      "shares": 30000,
       "amount": 25000.0
     },
     {
       "code": "159920",
       "name": "恒生ETF华夏",
       "category": "overseas_equity",
-      "weight": 0.3,
-      "price": 1.522,
-      "score": 50.0,
-      "shares": 19700,
-      "amount": 30000.0
+      "weight": 0.2908,
+      "price": 1.535,
+      "score": 58.8,
+      "shares": 18900,
+      "amount": 29078.0
+    },
+    {
+      "code": "510880",
+      "name": "红利ETF华泰柏瑞",
+      "category": "domestic_broad",
+      "weight": 0.286,
+      "price": 3.285,
+      "score": 56.2,
+      "shares": 8700,
+      "amount": 28596.0
     }
   ],
   "buy": [
     {
-      "code": "159920",
-      "name": "恒生ETF华夏",
-      "category": "overseas_equity",
-      "weight": 0.3,
-      "price": 1.522,
-      "score": 50.0,
-      "shares": 19700,
-      "amount": 30000.0,
+      "code": "510880",
+      "name": "红利ETF华泰柏瑞",
+      "category": "domestic_broad",
+      "weight": 0.286,
+      "price": 3.285,
+      "score": 56.2,
+      "shares": 8700,
+      "amount": 28596.0,
       "action": "新买入",
       "prev_weight": 0
     }
