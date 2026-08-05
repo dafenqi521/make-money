@@ -1,35 +1,35 @@
 {
-  "updated": "2026-08-03",
+  "updated": "2026-08-04",
   "targets": [
+    {
+      "code": "513500",
+      "name": "标普500ETF博时",
+      "category": "overseas_equity",
+      "weight": 0.3,
+      "price": 2.582,
+      "score": 72.0,
+      "shares": 11600,
+      "amount": 30000.0
+    },
     {
       "code": "512800",
       "name": "银行ETF华宝",
       "category": "domestic_sector",
       "weight": 0.25,
-      "price": 0.831,
-      "score": 91.2,
-      "shares": 30000,
+      "price": 0.811,
+      "score": 62.0,
+      "shares": 30800,
       "amount": 25000.0
-    },
-    {
-      "code": "159920",
-      "name": "恒生ETF华夏",
-      "category": "overseas_equity",
-      "weight": 0.2908,
-      "price": 1.535,
-      "score": 58.8,
-      "shares": 18900,
-      "amount": 29078.0
     },
     {
       "code": "510880",
       "name": "红利ETF华泰柏瑞",
       "category": "domestic_broad",
-      "weight": 0.286,
-      "price": 3.285,
-      "score": 56.2,
-      "shares": 8700,
-      "amount": 28596.0
+      "weight": 0.2802,
+      "price": 3.237,
+      "score": 48.0,
+      "shares": 8600,
+      "amount": 28016.0
     }
   ]
 }
