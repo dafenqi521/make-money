@@ -1,39 +1,53 @@
 {
-  "updated": "2026-08-10",
+  "updated": "2026-08-11",
   "scanned": 31,
   "targets": [
     {
       "code": "512010",
       "name": "医药ETF易方达",
       "category": "domestic_sector",
-      "weight": 0.2139,
-      "price": 0.405,
-      "score": 81.7,
-      "shares": 52800,
-      "amount": 21394.0
+      "weight": 0.2135,
+      "price": 0.403,
+      "score": 80.0,
+      "shares": 52900,
+      "amount": 21346.0
     },
     {
       "code": "513500",
       "name": "标普500ETF博时",
       "category": "overseas_equity",
       "weight": 0.3,
-      "price": 2.696,
+      "price": 2.716,
       "score": 75.0,
-      "shares": 11100,
+      "shares": 11000,
       "amount": 30000.0
     },
     {
-      "code": "510050",
-      "name": "上证50ETF华夏",
+      "code": "510880",
+      "name": "红利ETF华泰柏瑞",
       "category": "domestic_broad",
       "weight": 0.3,
-      "price": 3.075,
-      "score": 43.3,
-      "shares": 9700,
+      "price": 3.309,
+      "score": 45.0,
+      "shares": 9000,
       "amount": 30000.0
     }
   ],
   "buy": [
+    {
+      "code": "510880",
+      "name": "红利ETF华泰柏瑞",
+      "category": "domestic_broad",
+      "weight": 0.3,
+      "price": 3.309,
+      "score": 45.0,
+      "shares": 9000,
+      "amount": 30000.0,
+      "action": "新买入",
+      "prev_weight": 0
+    }
+  ],
+  "sell": [
     {
       "code": "510050",
       "name": "上证50ETF华夏",
@@ -43,9 +57,8 @@
       "score": 43.3,
       "shares": 9700,
       "amount": 30000.0,
-      "action": "新买入",
-      "prev_weight": 0
+      "action": "清仓",
+      "new_weight": 0
     }
-  ],
-  "sell": []
+  ]
 }
