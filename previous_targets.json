@@ -1,43 +1,43 @@
 {
-  "updated": "2026-08-18",
+  "updated": "2026-08-19",
   "targets": [
     {
       "code": "512010",
       "name": "医药ETF易方达",
       "category": "domestic_sector",
-      "weight": 0.0296,
-      "price": 0.401,
-      "score": 83.8,
+      "weight": 0.029,
+      "price": 0.396,
+      "score": 79.0,
       "shares": 7300,
-      "amount": 2958.0
+      "amount": 2897.0
     },
     {
       "code": "513500",
       "name": "标普500ETF博时",
       "category": "overseas_equity",
-      "weight": 0.0372,
-      "price": 2.688,
-      "score": 76.2,
+      "weight": 0.0353,
+      "price": 2.642,
+      "score": 67.0,
       "shares": 1300,
-      "amount": 3720.0
+      "amount": 3534.0
     },
     {
       "code": "510880",
       "name": "红利ETF华泰柏瑞",
       "category": "domestic_broad",
-      "weight": 0.0516,
-      "price": 3.34,
-      "score": 50.0,
-      "shares": 1500,
-      "amount": 5159.0
+      "weight": 0.0539,
+      "price": 3.36,
+      "score": 58.0,
+      "shares": 1600,
+      "amount": 5394.0
     },
     {
       "code": "511260",
       "name": "十年国债ETF国泰",
       "category": "bond",
       "weight": 0.3,
-      "price": 135.871,
-      "score": 40.0,
+      "price": 135.821,
+      "score": 36.0,
       "shares": 200,
       "amount": 30000.0
     }
