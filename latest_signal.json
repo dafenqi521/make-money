@@ -1,7 +1,63 @@
 {
-  "updated": "2026-08-21",
+  "updated": "2026-08-24",
   "scanned": 31,
   "targets": [
+    {
+      "code": "510880",
+      "name": "红利ETF华泰柏瑞",
+      "category": "domestic_broad",
+      "weight": 0.0566,
+      "price": 3.44,
+      "score": 78.0,
+      "shares": 1600,
+      "amount": 5659.0
+    },
+    {
+      "code": "512800",
+      "name": "银行ETF华宝",
+      "category": "domestic_sector",
+      "weight": 0.0432,
+      "price": 0.827,
+      "score": 70.0,
+      "shares": 5200,
+      "amount": 4322.0
+    },
+    {
+      "code": "518880",
+      "name": "黄金ETF华安",
+      "category": "commodity",
+      "weight": 0.0395,
+      "price": 9.564,
+      "score": 62.0,
+      "shares": 400,
+      "amount": 3948.0
+    },
+    {
+      "code": "511260",
+      "name": "十年国债ETF国泰",
+      "category": "bond",
+      "weight": 0.3,
+      "price": 135.848,
+      "score": 51.0,
+      "shares": 200,
+      "amount": 30000.0
+    }
+  ],
+  "buy": [
+    {
+      "code": "511260",
+      "name": "十年国债ETF国泰",
+      "category": "bond",
+      "weight": 0.3,
+      "price": 135.848,
+      "score": 51.0,
+      "shares": 200,
+      "amount": 30000.0,
+      "action": "新买入",
+      "prev_weight": 0
+    }
+  ],
+  "sell": [
     {
       "code": "510880",
       "name": "红利ETF华泰柏瑞",
@@ -10,40 +66,10 @@
       "price": 3.387,
       "score": 75.0,
       "shares": 8200,
-      "amount": 27840.0
+      "amount": 27840.0,
+      "action": "减仓",
+      "new_weight": 0.0566
     },
-    {
-      "code": "512800",
-      "name": "银行ETF华宝",
-      "category": "domestic_sector",
-      "weight": 0.2081,
-      "price": 0.815,
-      "score": 72.5,
-      "shares": 25500,
-      "amount": 20814.0
-    },
-    {
-      "code": "159920",
-      "name": "恒生ETF华夏",
-      "category": "overseas_equity",
-      "weight": 0.2275,
-      "price": 1.524,
-      "score": 58.3,
-      "shares": 14900,
-      "amount": 22749.0
-    },
-    {
-      "code": "518880",
-      "name": "黄金ETF华安",
-      "category": "commodity",
-      "weight": 0.186,
-      "price": 9.388,
-      "score": 57.5,
-      "shares": 1900,
-      "amount": 18597.0
-    }
-  ],
-  "buy": [
     {
       "code": "159920",
       "name": "恒生ETF华夏",
@@ -53,22 +79,32 @@
       "score": 58.3,
       "shares": 14900,
       "amount": 22749.0,
-      "action": "新买入",
-      "prev_weight": 0
-    }
-  ],
-  "sell": [
-    {
-      "code": "513500",
-      "name": "标普500ETF博时",
-      "category": "overseas_equity",
-      "weight": 0.181,
-      "price": 2.675,
-      "score": 71.0,
-      "shares": 6700,
-      "amount": 18101.0,
       "action": "清仓",
       "new_weight": 0
+    },
+    {
+      "code": "518880",
+      "name": "黄金ETF华安",
+      "category": "commodity",
+      "weight": 0.186,
+      "price": 9.388,
+      "score": 57.5,
+      "shares": 1900,
+      "amount": 18597.0,
+      "action": "减仓",
+      "new_weight": 0.0395
+    },
+    {
+      "code": "512800",
+      "name": "银行ETF华宝",
+      "category": "domestic_sector",
+      "weight": 0.2081,
+      "price": 0.815,
+      "score": 72.5,
+      "shares": 25500,
+      "amount": 20814.0,
+      "action": "减仓",
+      "new_weight": 0.0432
     }
   ]
 }
