@@ -1,45 +1,25 @@
 {
-  "updated": "2026-08-25",
+  "updated": "2026-08-27",
   "targets": [
     {
       "code": "510880",
       "name": "红利ETF华泰柏瑞",
       "category": "domestic_broad",
-      "weight": 0.0541,
-      "price": 3.409,
-      "score": 72.0,
-      "shares": 1500,
-      "amount": 5407.0
-    },
-    {
-      "code": "512800",
-      "name": "银行ETF华宝",
-      "category": "domestic_sector",
-      "weight": 0.0448,
-      "price": 0.821,
-      "score": 69.0,
-      "shares": 5400,
-      "amount": 4475.0
+      "weight": 0.3,
+      "price": 3.454,
+      "score": 77.5,
+      "shares": 8600,
+      "amount": 30000.0
     },
     {
       "code": "518880",
       "name": "黄金ETF华安",
       "category": "commodity",
-      "weight": 0.0412,
-      "price": 9.533,
-      "score": 62.0,
-      "shares": 400,
-      "amount": 4117.0
-    },
-    {
-      "code": "511260",
-      "name": "十年国债ETF国泰",
-      "category": "bond",
-      "weight": 0.3,
-      "price": 135.853,
-      "score": 52.0,
-      "shares": 200,
-      "amount": 30000.0
+      "weight": 0.25,
+      "price": 9.446,
+      "score": 72.5,
+      "shares": 2600,
+      "amount": 25000.0
     }
   ]
 }
