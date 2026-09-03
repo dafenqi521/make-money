@@ -1,7 +1,30 @@
 {
-  "updated": "2026-09-01",
+  "updated": "2026-09-02",
   "scanned": 31,
   "targets": [
+    {
+      "code": "512800",
+      "name": "银行ETF华宝",
+      "category": "domestic_sector",
+      "weight": 0.25,
+      "price": 0.844,
+      "score": 77.5,
+      "shares": 29600,
+      "amount": 25000.0
+    },
+    {
+      "code": "510880",
+      "name": "红利ETF华泰柏瑞",
+      "category": "domestic_broad",
+      "weight": 0.3,
+      "price": 3.428,
+      "score": 72.5,
+      "shares": 8700,
+      "amount": 30000.0
+    }
+  ],
+  "buy": [],
+  "sell": [
     {
       "code": "513500",
       "name": "标普500ETF博时",
@@ -10,27 +33,9 @@
       "price": 2.716,
       "score": 84.0,
       "shares": 5900,
-      "amount": 16119.0
-    },
-    {
-      "code": "512800",
-      "name": "银行ETF华宝",
-      "category": "domestic_sector",
-      "weight": 0.2084,
-      "price": 0.846,
-      "score": 66.0,
-      "shares": 24600,
-      "amount": 20844.0
-    },
-    {
-      "code": "510880",
-      "name": "红利ETF华泰柏瑞",
-      "category": "domestic_broad",
-      "weight": 0.2701,
-      "price": 3.482,
-      "score": 65.0,
-      "shares": 7700,
-      "amount": 27015.0
+      "amount": 16119.0,
+      "action": "清仓",
+      "new_weight": 0
     },
     {
       "code": "510050",
@@ -40,9 +45,9 @@
       "price": 3.055,
       "score": 39.0,
       "shares": 8500,
-      "amount": 26023.0
+      "amount": 26023.0,
+      "action": "清仓",
+      "new_weight": 0
     }
-  ],
-  "buy": [],
-  "sell": []
+  ]
 }
