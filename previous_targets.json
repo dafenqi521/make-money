@@ -1,25 +1,25 @@
 {
-  "updated": "2026-09-02",
+  "updated": "2026-09-03",
   "targets": [
-    {
-      "code": "512800",
-      "name": "银行ETF华宝",
-      "category": "domestic_sector",
-      "weight": 0.25,
-      "price": 0.844,
-      "score": 77.5,
-      "shares": 29600,
-      "amount": 25000.0
-    },
     {
       "code": "510880",
       "name": "红利ETF华泰柏瑞",
       "category": "domestic_broad",
       "weight": 0.3,
-      "price": 3.428,
-      "score": 72.5,
+      "price": 3.436,
+      "score": 87.5,
       "shares": 8700,
       "amount": 30000.0
+    },
+    {
+      "code": "512800",
+      "name": "银行ETF华宝",
+      "category": "domestic_sector",
+      "weight": 0.25,
+      "price": 0.84,
+      "score": 62.5,
+      "shares": 29700,
+      "amount": 25000.0
     }
   ]
 }
