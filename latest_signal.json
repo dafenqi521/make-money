@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-22",
+  "updated": "2026-09-23",
   "scanned": 31,
   "targets": [
     {
@@ -7,12 +7,35 @@
       "name": "纳指ETF国泰",
       "category": "overseas_equity",
       "weight": 0.3,
-      "price": 2.316,
-      "score": 75.0,
-      "shares": 12900,
+      "price": 2.334,
+      "score": 83.3,
+      "shares": 12800,
+      "amount": 30000.0
+    },
+    {
+      "code": "512100",
+      "name": "中证1000ETF南方",
+      "category": "domestic_broad",
+      "weight": 0.3,
+      "price": 3.146,
+      "score": 45.0,
+      "shares": 9500,
       "amount": 30000.0
     }
   ],
-  "buy": [],
+  "buy": [
+    {
+      "code": "512100",
+      "name": "中证1000ETF南方",
+      "category": "domestic_broad",
+      "weight": 0.3,
+      "price": 3.146,
+      "score": 45.0,
+      "shares": 9500,
+      "amount": 30000.0,
+      "action": "新买入",
+      "prev_weight": 0
+    }
+  ],
   "sell": []
 }
