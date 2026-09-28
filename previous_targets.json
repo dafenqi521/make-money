@@ -1,14 +1,14 @@
 {
-  "updated": "2026-09-24",
+  "updated": "2026-09-28",
   "targets": [
     {
       "code": "513100",
       "name": "纳指ETF国泰",
       "category": "overseas_equity",
       "weight": 0.3,
-      "price": 2.312,
+      "price": 2.304,
       "score": 100.0,
-      "shares": 12900,
+      "shares": 13000,
       "amount": 30000.0
     }
   ]
