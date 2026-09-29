@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-28",
+  "updated": "2026-09-29",
   "scanned": 31,
   "targets": [
     {
@@ -7,9 +7,9 @@
       "name": "纳指ETF国泰",
       "category": "overseas_equity",
       "weight": 0.3,
-      "price": 2.304,
+      "price": 2.324,
       "score": 100.0,
-      "shares": 13000,
+      "shares": 12900,
       "amount": 30000.0
     }
   ],
