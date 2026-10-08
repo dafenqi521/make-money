@@ -1,14 +1,14 @@
 {
-  "updated": "2026-09-30",
+  "updated": "2026-10-08",
   "targets": [
     {
       "code": "513100",
       "name": "纳指ETF国泰",
       "category": "overseas_equity",
       "weight": 0.3,
-      "price": 2.352,
-      "score": 75.0,
-      "shares": 12700,
+      "price": 2.374,
+      "score": 80.0,
+      "shares": 12600,
       "amount": 30000.0
     },
     {
@@ -16,9 +16,9 @@
       "name": "银行ETF华宝",
       "category": "domestic_sector",
       "weight": 0.25,
-      "price": 0.853,
-      "score": 75.0,
-      "shares": 29300,
+      "price": 0.859,
+      "score": 70.0,
+      "shares": 29100,
       "amount": 25000.0
     }
   ]
