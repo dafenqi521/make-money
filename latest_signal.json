@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-12",
+  "updated": "2026-10-13",
   "scanned": 31,
   "targets": [
     {
@@ -7,9 +7,9 @@
       "name": "纳指ETF国泰",
       "category": "overseas_equity",
       "weight": 0.3,
-      "price": 2.4,
+      "price": 2.375,
       "score": 75.0,
-      "shares": 12500,
+      "shares": 12600,
       "amount": 30000.0
     },
     {
@@ -17,35 +17,22 @@
       "name": "银行ETF华宝",
       "category": "domestic_sector",
       "weight": 0.25,
-      "price": 0.868,
-      "score": 63.7,
-      "shares": 28800,
+      "price": 0.864,
+      "score": 66.2,
+      "shares": 28900,
       "amount": 25000.0
     },
     {
       "code": "510880",
       "name": "红利ETF华泰柏瑞",
       "category": "domestic_broad",
-      "weight": 0.2816,
-      "price": 3.447,
-      "score": 57.5,
-      "shares": 8100,
-      "amount": 28162.0
+      "weight": 0.2914,
+      "price": 3.473,
+      "score": 63.7,
+      "shares": 8300,
+      "amount": 29140.0
     }
   ],
-  "buy": [
-    {
-      "code": "510880",
-      "name": "红利ETF华泰柏瑞",
-      "category": "domestic_broad",
-      "weight": 0.2816,
-      "price": 3.447,
-      "score": 57.5,
-      "shares": 8100,
-      "amount": 28162.0,
-      "action": "新买入",
-      "prev_weight": 0
-    }
-  ],
+  "buy": [],
   "sell": []
 }
