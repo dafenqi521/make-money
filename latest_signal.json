@@ -24,18 +24,5 @@
     }
   ],
   "buy": [],
-  "sell": [
-    {
-      "code": "510880",
-      "name": "红利ETF华泰柏瑞",
-      "category": "domestic_broad",
-      "weight": 0.3,
-      "price": 3.499,
-      "score": 63.7,
-      "shares": 8500,
-      "amount": 30000.0,
-      "action": "清仓",
-      "new_weight": 0
-    }
-  ]
+  "sell": []
 }
