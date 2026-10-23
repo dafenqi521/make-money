@@ -1,15 +1,4 @@
 {
-  "updated": "2026-10-22",
-  "targets": [
-    {
-      "code": "512800",
-      "name": "银行ETF华宝",
-      "category": "domestic_sector",
-      "weight": 0.25,
-      "price": 0.863,
-      "score": 100.0,
-      "shares": 28900,
-      "amount": 25000.0
-    }
-  ]
+  "updated": "2026-10-23",
+  "targets": []
 }
