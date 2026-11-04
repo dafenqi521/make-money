@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-03",
+  "updated": "2026-11-04",
   "scanned": 31,
   "targets": [
     {
@@ -7,9 +7,9 @@
       "name": "银行ETF华宝",
       "category": "domestic_sector",
       "weight": 0.25,
-      "price": 0.88,
+      "price": 0.874,
       "score": 100.0,
-      "shares": 28400,
+      "shares": 28600,
       "amount": 25000.0
     },
     {
@@ -17,7 +17,7 @@
       "name": "红利ETF华泰柏瑞",
       "category": "domestic_broad",
       "weight": 0.3,
-      "price": 3.438,
+      "price": 3.423,
       "score": 50.0,
       "shares": 8700,
       "amount": 30000.0
