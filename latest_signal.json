@@ -1,7 +1,20 @@
 {
-  "updated": "2026-11-05",
+  "updated": "2026-11-06",
   "scanned": 31,
   "targets": [
+    {
+      "code": "511010",
+      "name": "国债ETF国泰",
+      "category": "bond",
+      "weight": 0.3,
+      "price": 141.449,
+      "score": 100.0,
+      "shares": 200,
+      "amount": 30000.0
+    }
+  ],
+  "buy": [],
+  "sell": [
     {
       "code": "512800",
       "name": "银行ETF华宝",
@@ -10,57 +23,9 @@
       "price": 0.871,
       "score": 90.0,
       "shares": 5700,
-      "amount": 5010.0
-    },
-    {
-      "code": "511010",
-      "name": "国债ETF国泰",
-      "category": "bond",
-      "weight": 0.3,
-      "price": 141.352,
-      "score": 60.0,
-      "shares": 200,
-      "amount": 30000.0
-    }
-  ],
-  "buy": [
-    {
-      "code": "511010",
-      "name": "国债ETF国泰",
-      "category": "bond",
-      "weight": 0.3,
-      "price": 141.352,
-      "score": 60.0,
-      "shares": 200,
-      "amount": 30000.0,
-      "action": "新买入",
-      "prev_weight": 0
-    }
-  ],
-  "sell": [
-    {
-      "code": "510880",
-      "name": "红利ETF华泰柏瑞",
-      "category": "domestic_broad",
-      "weight": 0.3,
-      "price": 3.423,
-      "score": 50.0,
-      "shares": 8700,
-      "amount": 30000.0,
+      "amount": 5010.0,
       "action": "清仓",
       "new_weight": 0
-    },
-    {
-      "code": "512800",
-      "name": "银行ETF华宝",
-      "category": "domestic_sector",
-      "weight": 0.25,
-      "price": 0.874,
-      "score": 100.0,
-      "shares": 28600,
-      "amount": 25000.0,
-      "action": "减仓",
-      "new_weight": 0.0501
     }
   ]
 }
