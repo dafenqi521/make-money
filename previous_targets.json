@@ -1,12 +1,12 @@
 {
-  "updated": "2026-11-06",
+  "updated": "2026-11-09",
   "targets": [
     {
       "code": "511010",
       "name": "国债ETF国泰",
       "category": "bond",
       "weight": 0.3,
-      "price": 141.449,
+      "price": 141.458,
       "score": 100.0,
       "shares": 200,
       "amount": 30000.0
