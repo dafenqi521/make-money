@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-17",
+  "updated": "2026-11-18",
   "scanned": 34,
   "targets": [
     {
@@ -7,9 +7,9 @@
       "name": "银行ETF华宝",
       "category": "domestic_sector",
       "weight": 0.25,
-      "price": 0.916,
+      "price": 0.914,
       "score": 100.0,
-      "shares": 27200,
+      "shares": 27300,
       "amount": 25000.0
     }
   ],
