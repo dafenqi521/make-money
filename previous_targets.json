@@ -1,15 +1,25 @@
 {
-  "updated": "2026-11-19",
+  "updated": "2026-11-23",
   "targets": [
     {
       "code": "512800",
       "name": "银行ETF华宝",
       "category": "domestic_sector",
-      "weight": 0.25,
-      "price": 0.915,
-      "score": 100.0,
-      "shares": 27300,
-      "amount": 25000.0
+      "weight": 0.1155,
+      "price": 0.916,
+      "score": 86.7,
+      "shares": 12600,
+      "amount": 11554.0
+    },
+    {
+      "code": "511260",
+      "name": "十年国债ETF国泰",
+      "category": "bond",
+      "weight": 0.3,
+      "price": 135.95,
+      "score": 61.7,
+      "shares": 200,
+      "amount": 30000.0
     }
   ]
 }
